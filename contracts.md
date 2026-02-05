@@ -69,38 +69,22 @@ cast call $DATA_PROVIDER \
 
 The **3rd return value** is the VariableDebtToken — that's the one the delegator calls `approveDelegation()` on.
 
-## Delegator Setup Commands
+## Delegator Setup
 
-### Step 1: Supply collateral
+The delegator sets up collateral and delegation from **their own wallet** — via [app.aave.com](https://app.aave.com) and a block explorer. See [README.md](README.md) for the full step-by-step guide.
+
+The delegator's private key should **never** be in this repo or config.
+
+### Verify delegation (read-only, no key needed)
 ```bash
-# Approve Pool to spend your tokens
-cast send $TOKEN "approve(address,uint256)" $POOL $AMOUNT \
-  --private-key $YOUR_PK --rpc-url $RPC
-
-# Supply to Aave
-cast send $POOL "supply(address,uint256,address,uint16)" \
-  $TOKEN $AMOUNT $YOUR_ADDRESS 0 \
-  --private-key $YOUR_PK --rpc-url $RPC
-```
-
-### Step 2: Approve delegation
-```bash
-# Get the VariableDebtToken for the asset the agent will borrow
-VAR_DEBT=$(cast call $DATA_PROVIDER \
+# Look up the VariableDebtToken for an asset
+cast call $DATA_PROVIDER \
   "getReserveTokensAddresses(address)(address,address,address)" \
-  $BORROW_ASSET --rpc-url $RPC | sed -n '3p' | tr -d ' ')
+  $ASSET_ADDRESS --rpc-url $RPC
 
-# Approve the agent to borrow up to $MAX_AMOUNT
-cast send $VAR_DEBT "approveDelegation(address,uint256)" \
-  $AGENT_ADDRESS $MAX_AMOUNT_RAW \
-  --private-key $YOUR_PK --rpc-url $RPC
-```
-
-### Step 3: Verify
-```bash
 # Check allowance
 cast call $VAR_DEBT "borrowAllowance(address,address)(uint256)" \
-  $YOUR_ADDRESS $AGENT_ADDRESS --rpc-url $RPC
+  $DELEGATOR_ADDRESS $AGENT_ADDRESS --rpc-url $RPC
 ```
 
 ## Official Resources
