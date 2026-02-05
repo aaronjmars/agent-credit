@@ -1,28 +1,72 @@
-# Delegator Setup Guide
+# Agent Credit — Aave Credit Delegation for AI Agents
 
-This guide walks you through setting up credit delegation so an AI agent can borrow from Aave on your behalf. You (the delegator) supply collateral and control exactly what the agent can borrow. The agent never touches your private key.
+Give your AI agent a credit line. It borrows from Aave when it needs funds, and the debt accrues on your position. You stay in control — you choose which assets it can borrow, how much, and you can revoke anytime.
 
-## How It Works
+Works on **Aave V2** and **Aave V3**, across Base, Ethereum, Polygon, and Arbitrum.
 
-Your borrowing power comes from your **total collateral position** — it's holistic. If you deposit $10k of ETH at 80% LTV, you have $8k of borrowing capacity across any asset Aave offers.
+## What This Enables
 
-Delegation approval is **isolated per debt token**. You choose which assets the agent can borrow and set a ceiling for each, independently. The agent cannot borrow anything you haven't explicitly approved.
+- **Self-funding agents** — The agent borrows stablecoins or tokens to pay for operations without you manually transferring funds each time
+- **Autonomous DCA** — Agent borrows USDC periodically to dollar-cost-average into ETH
+- **Gas self-sufficiency** — Agent borrows a tiny amount of WETH to cover its own gas when it runs low
+- **On-demand liquidity** — Agent accesses capital exactly when needed, not sitting idle in a wallet
+
+The agent only needs a wallet with a tiny amount of ETH for gas. All real capital comes from your Aave position via delegation.
+
+## How Credit Delegation Works
+
+Credit delegation separates two things: **borrowing power** and **delegation approval**.
+
+**Borrowing power is holistic.** It comes from your entire collateral position across all assets. If you deposit $10k worth of ETH at 80% LTV, you have $8k of borrowing capacity. That capacity isn't locked to any specific asset — it's a pool-wide number.
+
+**Delegation approval is isolated per debt token.** You control *which* assets the agent can borrow and *how much* of each by calling `approveDelegation()` on individual VariableDebtTokens. Each asset has its own debt token contract, and each approval is independent.
 
 ```
-You deposit collateral          You approve per-asset delegation
-┌──────────────────────┐        ┌────────────────────────────────┐
-│  ETH   → $5,000      │        │  USDC debt token → agent: 500  │
-│  USDC  → $3,000      │  LTV   │  WETH debt token → agent: 0.5  │
-│  cbETH → $2,000      │ ────▶  │  DAI  debt token → agent: 0    │
-│                       │  80%   │                                │
-│  Total: $10k          │ = $8k  │  Agent can borrow USDC + WETH  │
-│  Capacity: $8k        │        │  Agent CANNOT borrow DAI       │
-└──────────────────────┘        └────────────────────────────────┘
+Your Collateral (holistic)              Delegation Approvals (isolated)
+┌─────────────────────────┐             ┌──────────────────────────────┐
+│  $5k ETH                │             │  USDC DebtToken → agent: 500 │
+│  $3k USDC               │  ───LTV───▶ │  WETH DebtToken → agent: 0.5 │
+│  $2k cbETH              │   = $8k     │  cbETH DebtToken → agent: 0  │
+│  Total: $10k @ 80% LTV  │  capacity   └──────────────────────────────┘
+└─────────────────────────┘
 ```
 
-Works on **Aave V2** and **Aave V3** — the credit delegation functions are identical across both versions. See [deployments.md](deployments.md) for all contract addresses.
+So if you deposit ETH as collateral, you can approve the agent to borrow up to 500 USDC and 0.1 WETH — but not cbETH. The agent can only borrow what you've explicitly approved, but the *capacity* to borrow comes from your total collateral.
+
+## Scripts
+
+| Script | What it does |
+|--------|-------------|
+| `aave-setup.sh` | Verify config, dependencies, and delegation status |
+| `aave-borrow.sh <SYMBOL> <AMOUNT>` | Borrow via delegation (runs 4 safety checks first) |
+| `aave-repay.sh <SYMBOL> <AMOUNT\|max>` | Repay debt on behalf of the delegator |
+| `aave-status.sh [SYMBOL] [--health-only] [--json]` | Check allowances, health factor, and debt |
+
+Every borrow runs these checks before executing:
+1. **Per-tx cap** — amount within configured limit
+2. **Delegation allowance** — sufficient allowance on the debt token
+3. **Health factor** — delegator's position stays healthy after borrow
+4. **Gas balance** — agent wallet has enough ETH for the transaction
+
+If any check fails, the borrow is aborted with a clear error.
+
+## Safety
+
+The agent never has access to your private key. It only holds its own key (for signing borrow/repay transactions) and your public address (to know whose position to borrow against).
+
+You control exposure through:
+- **Delegation ceilings** per asset (set via `approveDelegation`)
+- **Per-transaction caps** in the config (`safety.maxBorrowPerTx`)
+- **Health factor floor** (`safety.minHealthFactor`, default 1.5)
+- **Instant revocation** — set delegation to 0 at any time
+
+See [safety.md](safety.md) for the full threat model and emergency procedures.
 
 ---
+
+# Delegator Setup Guide
+
+This section walks you through setting up delegation so the agent can start borrowing.
 
 ## Prerequisites
 
@@ -32,33 +76,26 @@ Install [Foundry](https://book.getfoundry.sh/) for the `cast` CLI:
 curl -L https://foundry.paradigm.xyz | bash && foundryup
 ```
 
-Set your variables (adjust for your chain — this example uses Base):
+Set your variables (this example uses Base — see [deployments.md](deployments.md) for other chains):
 
 ```bash
-# Your wallet
 export YOUR_PK="0xYOUR_PRIVATE_KEY"
 export YOUR_ADDRESS="0xYOUR_WALLET_ADDRESS"
-
-# Agent wallet (you'll get this from the agent config)
 export AGENT_ADDRESS="0xAGENT_WALLET_ADDRESS"
 
-# Base V3 addresses (see deployments.md for other chains)
+# Base V3
 export RPC="https://mainnet.base.org"
 export POOL="0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
 export DATA_PROVIDER="0x2d8A3C5677189723C4cB8873CfC9C8976FDF38Ac"
 ```
 
----
-
 ## Step 1: Supply Collateral
 
-You need collateral in Aave before anything can be borrowed against it. If you already have a position on Aave (via the web UI at [app.aave.com](https://app.aave.com)), skip to Step 2.
-
-### Supply an ERC-20 token (e.g. WETH on Base)
+You need collateral in Aave before anything can be borrowed against it. If you already have a position on Aave (via [app.aave.com](https://app.aave.com)), skip to Step 2.
 
 ```bash
 TOKEN="0x4200000000000000000000000000000000000006"  # WETH on Base
-AMOUNT="10000000000000000"                           # 0.01 WETH in raw units
+AMOUNT="10000000000000000"                           # 0.01 WETH
 
 # Approve the Pool to pull your tokens
 cast send $TOKEN \
@@ -72,50 +109,39 @@ cast send $POOL \
   --private-key $YOUR_PK --rpc-url $RPC
 ```
 
-### Verify your position
+## Step 2: Find the Debt Token
+
+Each asset on Aave has a **VariableDebtToken** — that's the contract you approve delegation on. You need to find its address for every asset you want the agent to borrow.
+
+### Option A: From the Aave UI
+
+On [app.aave.com](https://app.aave.com), go to the reserve page for the asset you want. Click the token icon to see the underlying token, the aToken, and the **debt token** address:
+
+![Finding the debt token address on the Aave UI](img/token-find.png)
+
+### Option B: From the command line
 
 ```bash
-cast call $POOL \
-  "getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)" \
-  $YOUR_ADDRESS --rpc-url $RPC
-```
-
-Returns 6 values:
-1. Total collateral (V3: USD with 8 decimals / V2: ETH with 18 decimals)
-2. Total debt
-3. Available borrows
-4. Current liquidation threshold
-5. LTV
-6. Health factor (18 decimals — divide by 1e18)
-
----
-
-## Step 2: Approve Delegation
-
-This is the key step. You call `approveDelegation()` on the **VariableDebtToken** of each asset you want the agent to borrow.
-
-### Find the VariableDebtToken address
-
-```bash
-# Example: find the USDC debt token on Base
-USDC="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-
+# Returns (aToken, stableDebtToken, variableDebtToken)
 cast call $DATA_PROVIDER \
   "getReserveTokensAddresses(address)(address,address,address)" \
-  $USDC --rpc-url $RPC
+  $TOKEN_ADDRESS --rpc-url $RPC
 ```
 
-Returns 3 addresses:
-1. aToken (receipt token for suppliers)
-2. StableDebtToken (not used for delegation)
-3. **VariableDebtToken** ← this is the one you need
+The **3rd return value** is the VariableDebtToken.
 
-Or just look it up in [deployments.md](deployments.md).
+### Option C: From deployments.md
 
-### Approve the agent
+All debt token addresses for common assets are listed in [deployments.md](deployments.md).
+
+## Step 3: Approve Delegation
+
+Call `approveDelegation()` on the VariableDebtToken. This tells Aave: "this agent address is allowed to borrow up to X of this asset, and the debt goes on my position."
+
+### Via command line
 
 ```bash
-VAR_DEBT_TOKEN="0x59dca05b6c26dbd64b5381374aAaC5CD05644C28"  # USDC VariableDebtToken on Base
+VAR_DEBT_TOKEN="0x59dca05b6c26dbd64b5381374aAaC5CD05644C28"  # USDC debt token on Base
 
 # Allow the agent to borrow up to 500 USDC (500 * 10^6 = 500000000)
 cast send $VAR_DEBT_TOKEN \
@@ -124,9 +150,21 @@ cast send $VAR_DEBT_TOKEN \
   --private-key $YOUR_PK --rpc-url $RPC
 ```
 
+### Via block explorer (Basescan / Etherscan)
+
+1. Go to the VariableDebtToken contract on the block explorer
+2. Click **Write Contract** → **Connect Wallet**
+3. Find **`approveDelegation`**
+4. Enter the agent address as `delegatee` and the amount in raw units as `amount`
+5. Submit the transaction
+
+![Calling approveDelegation on the block explorer](img/approve.png)
+
+> **Raw units:** USDC has 6 decimals, so 500 USDC = `500000000`. WETH has 18 decimals, so 0.1 WETH = `100000000000000000`. See [deployments.md](deployments.md) for decimals per asset.
+
 ### Approve multiple assets
 
-Each asset has its own debt token. Approve them separately:
+Each asset has its own debt token — approve them separately:
 
 ```bash
 # USDC — up to 500
@@ -142,42 +180,26 @@ cast send "0x24e6e0795b3c7c71D965fCc4f371803d1c1DcA1E" \
 
 The agent cannot borrow any asset you haven't approved.
 
----
-
-## Step 3: Verify
-
-### Check a specific delegation allowance
-
-```bash
-cast call $VAR_DEBT_TOKEN \
-  "borrowAllowance(address,address)(uint256)" \
-  $YOUR_ADDRESS $AGENT_ADDRESS --rpc-url $RPC
-```
-
-Returns the remaining allowance in raw units. Each borrow the agent makes reduces this number.
-
-### Run the full status check
-
-If the agent skill is configured:
-
-```bash
-./aave-status.sh
-```
-
-This shows delegation allowances, health factor, and outstanding debt for all configured assets.
-
----
-
 ## Step 4: Fund the Agent Wallet for Gas
 
-The agent wallet needs a small amount of native token to pay for transaction gas. It doesn't need much — on Base, a borrow transaction costs ~$0.01.
-
-Send a tiny amount of ETH to the agent address:
+The agent wallet needs a small amount of ETH to pay for transaction gas. On Base, a borrow costs ~$0.01, so even 0.001 ETH goes a long way.
 
 ```bash
 cast send $AGENT_ADDRESS \
   --value 0.001ether \
   --private-key $YOUR_PK --rpc-url $RPC
+```
+
+## Step 5: Verify
+
+```bash
+# Check the delegation allowance
+cast call $VAR_DEBT_TOKEN \
+  "borrowAllowance(address,address)(uint256)" \
+  $YOUR_ADDRESS $AGENT_ADDRESS --rpc-url $RPC
+
+# Or run the full status check
+./aave-status.sh
 ```
 
 ---
@@ -186,10 +208,9 @@ cast send $AGENT_ADDRESS \
 
 ### Increase an allowance
 
-Call `approveDelegation` again with the new total. It **replaces** the previous value (not additive):
+Call `approveDelegation` again. It **replaces** the previous value (not additive):
 
 ```bash
-# Increase USDC delegation to 1000
 cast send $VAR_DEBT_TOKEN \
   "approveDelegation(address,uint256)" \
   $AGENT_ADDRESS 1000000000 \
@@ -213,10 +234,7 @@ Call `approveDelegation(..., 0)` on every VariableDebtToken you previously appro
 
 ### Check outstanding debt
 
-If the agent has borrowed, debt accrues on your position. Check it:
-
 ```bash
-# Check your variable debt balance for a specific asset
 cast call $VAR_DEBT_TOKEN \
   "balanceOf(address)(uint256)" \
   $YOUR_ADDRESS --rpc-url $RPC
@@ -224,33 +242,18 @@ cast call $VAR_DEBT_TOKEN \
 
 ### Repay debt yourself
 
-You can repay debt directly without the agent:
-
 ```bash
-# Approve Pool to spend your USDC
-cast send $USDC "approve(address,uint256)" $POOL $AMOUNT \
+# Approve Pool to spend your tokens
+cast send $TOKEN "approve(address,uint256)" $POOL $AMOUNT \
   --private-key $YOUR_PK --rpc-url $RPC
 
 # Repay (use max uint to repay entire debt)
+MAX_UINT="115792089237316195423570985008687907853269984665640564039457584007913129639935"
 cast send $POOL \
   "repay(address,uint256,uint256,address)" \
-  $USDC 115792089237316195423570985008687907853269984665640564039457584007913129639935 2 $YOUR_ADDRESS \
+  $TOKEN $MAX_UINT 2 $YOUR_ADDRESS \
   --private-key $YOUR_PK --rpc-url $RPC
 ```
-
----
-
-## Using the Aave Web UI Instead
-
-All of the above can also be done through **[app.aave.com](https://app.aave.com)** — supply collateral and manage your position there. The only step that requires `cast` (or direct contract interaction) is `approveDelegation`, since the Aave UI doesn't expose credit delegation.
-
-For delegation via Etherscan/Basescan instead of `cast`:
-
-1. Go to the VariableDebtToken contract on the block explorer (find the address in [deployments.md](deployments.md))
-2. Click **Write Contract** → **Connect Wallet**
-3. Find `approveDelegation`
-4. Enter the agent address and the amount in raw units
-5. Submit the transaction
 
 ---
 
@@ -278,3 +281,12 @@ See [safety.md](safety.md) for the full threat model and emergency procedures.
 | Check health factor | `cast call $POOL "getUserAccountData(address)(...)" $YOU` |
 | Check debt | `cast call $VAR_DEBT "balanceOf(address)(uint256)" $YOU` |
 | Fund agent gas | `cast send $AGENT --value 0.001ether` |
+
+## Reference Files
+
+| File | Contents |
+|------|----------|
+| [SKILL.md](SKILL.md) | Agent-facing skill documentation |
+| [deployments.md](deployments.md) | All Aave V2/V3 contract + debt token addresses |
+| [contracts.md](contracts.md) | Core contract addresses and delegator setup commands |
+| [safety.md](safety.md) | Threat model, risk mitigations, emergency procedures |
