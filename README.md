@@ -1,16 +1,18 @@
-# Agent Credit — Aave Credit Delegation for AI Agents
+# Agent Credit — Credit Delegation for AI Agents
 
 Give your AI agent a credit line. It borrows from Aave when it needs funds, and the debt accrues on your position. You stay in control — you choose which assets it can borrow, how much, and you can revoke anytime.
 
-Works on **Aave V2** and **Aave V3**, across Base, Ethereum, Polygon, and Arbitrum.
+Works on **Aave V2** and **Aave V3**. Preconfigured for Base, Ethereum, Polygon, and Arbitrum — but works on any EVM chain where Aave is deployed.
+
+![Agent Credit — Aave Credit Delegation](img/credit.png)
 
 ## Compatible With
 
-- **[OpenClaw](https://openclaw.org)** — Install as a skill and the agent can borrow autonomously
-- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — Run the scripts directly from a Claude Code session
+- **[OpenClaw](https://openclaw.ai/)** — Install as a skill and the agent can borrow autonomously
+- **[Claude Code](https://www.npmjs.com/package/@anthropic-ai/claude-code)** — Run the scripts directly from a Claude Code session
 - **Any agent framework** — The scripts are plain bash + Foundry's `cast`, so they work anywhere with a shell
 
-Combines naturally with **[Bankr](https://bankr.ing)** skills — borrow USDC via delegation, then use Bankr to swap, bridge, or deploy it. The agent gets a credit line *and* a full DeFi toolkit.
+Combines naturally with **[Bankr](https://bankr.bot/)** skills — borrow USDC via delegation, then use Bankr to swap, bridge, or deploy it. The agent gets a credit line *and* a full DeFi toolkit.
 
 ## What This Enables
 

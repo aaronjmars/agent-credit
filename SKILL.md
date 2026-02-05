@@ -28,11 +28,11 @@ Borrow funds from Aave using delegated credit. Your main wallet supplies collate
 
 ## Compatible With
 
-- **[OpenClaw](https://openclaw.org)** — Install as a skill, the agent borrows autonomously
-- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — Run scripts directly from a Claude Code session
+- **[OpenClaw](https://openclaw.ai/)** — Install as a skill, the agent borrows autonomously
+- **[Claude Code](https://www.npmjs.com/package/@anthropic-ai/claude-code)** — Run scripts directly from a Claude Code session
 - **Any agent framework** — Plain bash + Foundry's `cast`, works anywhere with a shell
 
-Combines with **[Bankr](https://bankr.ing)** skills for borrow-then-swap flows: borrow USDC via delegation, then use Bankr to swap, bridge, or deploy it.
+Combines with **[Bankr](https://bankr.bot/)** skills for borrow-then-swap flows: borrow USDC via delegation, then use Bankr to swap, bridge, or deploy it.
 
 ## How Credit Delegation Works
 
