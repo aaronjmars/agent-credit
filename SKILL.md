@@ -1,23 +1,6 @@
 ---
 name: agent-credit
-description: Borrow funds from Aave via credit delegation. Use when the agent needs to self-fund operations, withdraw stablecoins or tokens from Aave using pre-approved borrowing power delegated by the user. Supports checking delegation allowance, health factor monitoring, borrowing, repaying, and debt tracking. Requires the user (delegator) to have collateral in Aave and to have called approveDelegation() on the relevant DebtToken for the agent's wallet address. Works on Aave V2 and V3, on Ethereum, Base, Polygon, Arbitrum. Combines with Bankr skills for borrow-then-swap flows.
-metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "🏦",
-        "requires": { "bins": ["cast", "jq", "bc"] },
-        "install":
-          [
-            {
-              "id": "foundry",
-              "kind": "shell",
-              "command": "curl -L https://foundry.paradigm.xyz | bash && foundryup",
-              "label": "Install Foundry (cast CLI)",
-            },
-          ],
-      },
-  }
+description: Borrow from Aave via credit delegation. Agent self-funds by borrowing against delegator collateral. Supports borrow, repay, health checks. Works on Aave V2/V3.
 ---
 
 # Aave Credit Delegation
