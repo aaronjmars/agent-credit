@@ -1,6 +1,6 @@
 ---
 name: agent-credit
-description: Borrow funds from Aave V3 via credit delegation. Use when the agent needs to self-fund operations, withdraw stablecoins or tokens from Aave using pre-approved borrowing power delegated by the user. Supports checking delegation allowance, health factor monitoring, borrowing, repaying, and debt tracking. Requires the user (delegator) to have collateral in Aave and to have called approveDelegation() on the relevant DebtToken for the agent's wallet address. Works on Ethereum, Base, Polygon, Arbitrum, and any Aave V3 deployment.
+description: Borrow funds from Aave via credit delegation. Use when the agent needs to self-fund operations, withdraw stablecoins or tokens from Aave using pre-approved borrowing power delegated by the user. Supports checking delegation allowance, health factor monitoring, borrowing, repaying, and debt tracking. Requires the user (delegator) to have collateral in Aave and to have called approveDelegation() on the relevant DebtToken for the agent's wallet address. Works on Aave V2 and V3, on Ethereum, Base, Polygon, Arbitrum. Combines with Bankr skills for borrow-then-swap flows.
 metadata:
   {
     "openclaw":
@@ -20,11 +20,19 @@ metadata:
   }
 ---
 
-# Aave V3 Credit Delegation
+# Aave Credit Delegation
 
-Borrow funds from **Aave V3** using delegated credit. Your main wallet supplies collateral and delegates borrowing power to the agent's wallet. The agent can then autonomously borrow tokens when needed — the debt accrues against the delegator's position.
+Borrow funds from Aave using delegated credit. Your main wallet supplies collateral and delegates borrowing power to the agent's wallet. The agent can then autonomously borrow tokens when needed — the debt accrues against the delegator's position.
 
-> **Protocol version:** This skill is built for **Aave V3** but also works with **Aave V2** — the function signatures for credit delegation (`borrow`, `repay`, `approveDelegation`, `borrowAllowance`) are identical across both versions. Just swap in the V2 LendingPool and ProtocolDataProvider addresses. The only difference is cosmetic: the collateral/debt USD display assumes V3's base-currency denomination (8 decimals) and will be inaccurate on V2 (which denominates in ETH at 18 decimals). The health factor safety check works correctly on both.
+> **Protocol:** Works on **Aave V3** and **Aave V2** — the function signatures for credit delegation (`borrow`, `repay`, `approveDelegation`, `borrowAllowance`) are identical across both versions. Just swap in the V2 LendingPool and ProtocolDataProvider addresses. The only cosmetic difference: V3 returns collateral/debt in USD (8 decimals), V2 in ETH (18 decimals). The health factor safety check works correctly on both.
+
+## Compatible With
+
+- **[OpenClaw](https://openclaw.org)** — Install as a skill, the agent borrows autonomously
+- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — Run scripts directly from a Claude Code session
+- **Any agent framework** — Plain bash + Foundry's `cast`, works anywhere with a shell
+
+Combines with **[Bankr](https://bankr.ing)** skills for borrow-then-swap flows: borrow USDC via delegation, then use Bankr to swap, bridge, or deploy it.
 
 ## How Credit Delegation Works
 
@@ -205,7 +213,7 @@ If ANY check fails, the borrow is **aborted** with a clear error message.
 | Polygon   | `0x794a61358D6845594F94dc1DB02A252b5b4814aD` | Very Low  |
 | Arbitrum  | `0x794a61358D6845594F94dc1DB02A252b5b4814aD` | Low       |
 
-See [references/contracts.md](references/contracts.md) for full address list.
+See [deployments.md](deployments.md) for full address list including debt tokens.
 
 ## Common Patterns
 
@@ -216,16 +224,24 @@ See [references/contracts.md](references/contracts.md) for full address list.
 BALANCE=$(cast balance $AGENT_ADDRESS --rpc-url $RPC)
 if [ "$BALANCE" -lt "1000000000000000" ]; then  # < 0.001 ETH
   # Borrow a small amount of WETH for gas
-  scripts/aave-borrow.sh WETH 0.005
+  aave-borrow.sh WETH 0.005
 fi
 ```
 
-### Periodic DCA via Delegation
+### Borrow + Swap via Bankr
 
 ```bash
-# Agent borrows USDC weekly to buy ETH
-scripts/aave-borrow.sh USDC 100
-# Then use Bankr or DEX skill to swap
+# Borrow USDC from delegated credit
+aave-borrow.sh USDC 100
+# Swap to ETH using Bankr
+bankr.sh "Swap 100 USDC for ETH on Base"
+```
+
+### Periodic DCA
+
+```bash
+# Agent borrows USDC weekly and swaps to ETH
+aave-borrow.sh USDC 100
 bankr.sh "Swap 100 USDC for ETH on Base"
 ```
 
@@ -233,9 +249,9 @@ bankr.sh "Swap 100 USDC for ETH on Base"
 
 ```bash
 # Always check health first
-scripts/aave-status.sh
+aave-status.sh
 # Only borrow if healthy
-scripts/aave-borrow.sh USDC 500
+aave-borrow.sh USDC 500
 ```
 
 ## Configuration Reference
@@ -278,14 +294,15 @@ scripts/aave-borrow.sh USDC 500
 
 ## Security
 
-See [references/safety.md](references/safety.md) for comprehensive security guidelines.
+See [safety.md](safety.md) for the full threat model and emergency procedures.
 
 **Critical rules:**
-1. **Never store private keys in SKILL.md or commit config.json to version control**
-2. **Never set `minHealthFactor` below 1.2** — liquidation happens at 1.0
-3. **Always cap delegation amounts** — never approve `type(uint256).max`
-4. **Monitor delegator health** — set up alerts if HF drops below 2.0
-5. **Agent must refuse** to borrow if safety checks fail, even if instructed to
+1. **The delegator's private key must NEVER be in this repo, config, or scripts** — this is the agent's workspace. The delegator manages their side via the Aave UI or a block explorer.
+2. **Never commit config.json to version control** — it contains the agent's private key
+3. **Never set `minHealthFactor` below 1.2** — liquidation happens at 1.0
+4. **Always cap delegation amounts** — never approve `type(uint256).max`
+5. **Monitor delegator health** — set up alerts if HF drops below 2.0
+6. **Agent must refuse** to borrow if safety checks fail, even if instructed to
 
 ## Resources
 

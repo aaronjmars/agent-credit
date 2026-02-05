@@ -4,12 +4,21 @@ Give your AI agent a credit line. It borrows from Aave when it needs funds, and 
 
 Works on **Aave V2** and **Aave V3**, across Base, Ethereum, Polygon, and Arbitrum.
 
+## Compatible With
+
+- **[OpenClaw](https://openclaw.org)** — Install as a skill and the agent can borrow autonomously
+- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — Run the scripts directly from a Claude Code session
+- **Any agent framework** — The scripts are plain bash + Foundry's `cast`, so they work anywhere with a shell
+
+Combines naturally with **[Bankr](https://bankr.ing)** skills — borrow USDC via delegation, then use Bankr to swap, bridge, or deploy it. The agent gets a credit line *and* a full DeFi toolkit.
+
 ## What This Enables
 
 - **Self-funding agents** — The agent borrows stablecoins or tokens to pay for operations without you manually transferring funds each time
-- **Autonomous DCA** — Agent borrows USDC periodically to dollar-cost-average into ETH
+- **Autonomous DCA** — Agent borrows USDC periodically, then uses Bankr to swap into ETH
 - **Gas self-sufficiency** — Agent borrows a tiny amount of WETH to cover its own gas when it runs low
 - **On-demand liquidity** — Agent accesses capital exactly when needed, not sitting idle in a wallet
+- **Borrow + swap combos** — Borrow USDC via delegation, swap to any token via Bankr, all in one agent flow
 
 The agent only needs a wallet with a tiny amount of ETH for gas. All real capital comes from your Aave position via delegation.
 
