@@ -5,6 +5,9 @@
 #          aave-repay.sh USDC max
 set -euo pipefail
 
+# Strip cast's bracket annotations e.g. "7920000000000000 [7.92e15]" → "7920000000000000"
+strip_cast() { sed 's/ *\[.*\]//' | tr -d ' '; }
+
 SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/skills/aave-delegation}"
 CONFIG="$SKILL_DIR/config.json"
 
@@ -47,14 +50,14 @@ TOKENS=$(cast call "$DATA_PROVIDER" \
   "getReserveTokensAddresses(address)(address,address,address)" \
   "$ASSET_ADDR" \
   --rpc-url "$RPC_URL")
-VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | tr -d ' ')
+VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | strip_cast)
 
 # Check current debt
 DEBT_RAW=$(cast call "$VAR_DEBT_TOKEN" \
   "balanceOf(address)(uint256)" \
   "$DELEGATOR" \
   --rpc-url "$RPC_URL")
-DEBT_RAW=$(echo "$DEBT_RAW" | tr -d ' ')
+DEBT_RAW=$(echo "$DEBT_RAW" | strip_cast)
 DEBT=$(echo "scale=$DECIMALS; $DEBT_RAW / (10^$DECIMALS)" | bc)
 
 echo "=== Aave V3 Debt Repayment ==="
@@ -86,7 +89,7 @@ AGENT_BALANCE_RAW=$(cast call "$ASSET_ADDR" \
   "balanceOf(address)(uint256)" \
   "$AGENT_ADDR" \
   --rpc-url "$RPC_URL")
-AGENT_BALANCE_RAW=$(echo "$AGENT_BALANCE_RAW" | tr -d ' ')
+AGENT_BALANCE_RAW=$(echo "$AGENT_BALANCE_RAW" | strip_cast)
 AGENT_BALANCE=$(echo "scale=$DECIMALS; $AGENT_BALANCE_RAW / (10^$DECIMALS)" | bc)
 
 echo "  Agent $SYMBOL balance: $AGENT_BALANCE"
@@ -114,7 +117,7 @@ EXISTING_ALLOWANCE=$(cast call "$ASSET_ADDR" \
   "allowance(address,address)(uint256)" \
   "$AGENT_ADDR" "$POOL" \
   --rpc-url "$RPC_URL")
-EXISTING_ALLOWANCE=$(echo "$EXISTING_ALLOWANCE" | tr -d ' ')
+EXISTING_ALLOWANCE=$(echo "$EXISTING_ALLOWANCE" | strip_cast)
 
 # Determine approval amount
 if [ "$AMOUNT_RAW" = "$MAX_UINT" ]; then
@@ -196,7 +199,7 @@ if [ -n "$TX_HASH" ]; then
     "balanceOf(address)(uint256)" \
     "$DELEGATOR" \
     --rpc-url "$RPC_URL" 2>/dev/null || echo "?")
-  NEW_DEBT_RAW=$(echo "$NEW_DEBT_RAW" | tr -d ' ')
+  NEW_DEBT_RAW=$(echo "$NEW_DEBT_RAW" | strip_cast)
   if [ "$NEW_DEBT_RAW" != "?" ]; then
     NEW_DEBT=$(echo "scale=$DECIMALS; $NEW_DEBT_RAW / (10^$DECIMALS)" | bc)
     echo "  Remaining $SYMBOL debt: $NEW_DEBT"
@@ -208,7 +211,7 @@ if [ -n "$TX_HASH" ]; then
     "$DELEGATOR" \
     --rpc-url "$RPC_URL" 2>/dev/null || echo "")
   if [ -n "$NEW_ACCOUNT" ]; then
-    NEW_HF_RAW=$(echo "$NEW_ACCOUNT" | sed -n '6p' | tr -d ' ')
+    NEW_HF_RAW=$(echo "$NEW_ACCOUNT" | sed -n '6p' | strip_cast)
     if [ "$NEW_HF_RAW" = "$MAX_UINT" ]; then
       echo "  Health factor: ∞ (all debt repaid)"
     else

@@ -2,6 +2,9 @@
 # aave-setup.sh — Verify skill configuration and dependencies
 set -euo pipefail
 
+# Strip cast's bracket annotations e.g. "7920000000000000 [7.92e15]" → "7920000000000000"
+strip_cast() { sed 's/ *\[.*\]//' | tr -d ' '; }
+
 SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/skills/aave-delegation}"
 CONFIG="$SKILL_DIR/config.json"
 
@@ -154,7 +157,7 @@ if [ -n "$AGENT_PK" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ] && [ -n "$DATA
     fi
     
     # Parse variable debt token (3rd return value)
-    VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | tr -d ' ')
+    VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | strip_cast)
     
     if [ -z "$VAR_DEBT_TOKEN" ] || [ "$VAR_DEBT_TOKEN" = "0x0000000000000000000000000000000000000000" ]; then
       warn "$SYMBOL: No variable debt token found"
@@ -167,7 +170,7 @@ if [ -n "$AGENT_PK" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ] && [ -n "$DATA
       "$DELEGATOR" "$AGENT_ADDR" \
       --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
     
-    ALLOWANCE_RAW=$(echo "$ALLOWANCE_RAW" | tr -d ' ')
+    ALLOWANCE_RAW=$(echo "$ALLOWANCE_RAW" | strip_cast)
     
     if [ "$ALLOWANCE_RAW" = "0" ]; then
       warn "$SYMBOL: No delegation allowance — delegator must call approveDelegation()"
@@ -188,10 +191,10 @@ if [ -n "$POOL" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ]; then
     --rpc-url "$RPC_URL" 2>/dev/null || echo "")
   
   if [ -n "$ACCOUNT_DATA" ]; then
-    TOTAL_COLLATERAL=$(echo "$ACCOUNT_DATA" | sed -n '1p' | tr -d ' ')
-    TOTAL_DEBT=$(echo "$ACCOUNT_DATA" | sed -n '2p' | tr -d ' ')
-    AVAILABLE_BORROWS=$(echo "$ACCOUNT_DATA" | sed -n '3p' | tr -d ' ')
-    HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | tr -d ' ')
+    TOTAL_COLLATERAL=$(echo "$ACCOUNT_DATA" | sed -n '1p' | strip_cast)
+    TOTAL_DEBT=$(echo "$ACCOUNT_DATA" | sed -n '2p' | strip_cast)
+    AVAILABLE_BORROWS=$(echo "$ACCOUNT_DATA" | sed -n '3p' | strip_cast)
+    HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | strip_cast)
     
     # Values are in base currency (USD with 8 decimals)
     COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / 100000000" | bc 2>/dev/null || echo "?")

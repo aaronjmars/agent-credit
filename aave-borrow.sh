@@ -80,7 +80,7 @@ TOKENS=$(cast call "$DATA_PROVIDER" \
   "getReserveTokensAddresses(address)(address,address,address)" \
   "$ASSET_ADDR" \
   --rpc-url "$RPC_URL")
-VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | tr -d ' ')
+VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | strip_cast)
 
 ALLOWANCE_RAW=$(cast call "$VAR_DEBT_TOKEN" \
   "borrowAllowance(address,address)(uint256)" \

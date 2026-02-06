@@ -3,6 +3,9 @@
 # Usage: aave-status.sh [SYMBOL] [--health-only] [--json]
 set -euo pipefail
 
+# Strip cast's bracket annotations e.g. "7920000000000000 [7.92e15]" → "7920000000000000"
+strip_cast() { sed 's/ *\[.*\]//' | tr -d ' '; }
+
 SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/skills/aave-delegation}"
 CONFIG="$SKILL_DIR/config.json"
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -33,12 +36,12 @@ ACCOUNT_DATA=$(cast call "$POOL" \
   "$DELEGATOR" \
   --rpc-url "$RPC_URL")
 
-TOTAL_COLLATERAL=$(echo "$ACCOUNT_DATA" | sed -n '1p' | tr -d ' ')
-TOTAL_DEBT=$(echo "$ACCOUNT_DATA" | sed -n '2p' | tr -d ' ')
-AVAILABLE_BORROWS=$(echo "$ACCOUNT_DATA" | sed -n '3p' | tr -d ' ')
-CURRENT_LT=$(echo "$ACCOUNT_DATA" | sed -n '4p' | tr -d ' ')
-LTV=$(echo "$ACCOUNT_DATA" | sed -n '5p' | tr -d ' ')
-HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | tr -d ' ')
+TOTAL_COLLATERAL=$(echo "$ACCOUNT_DATA" | sed -n '1p' | strip_cast)
+TOTAL_DEBT=$(echo "$ACCOUNT_DATA" | sed -n '2p' | strip_cast)
+AVAILABLE_BORROWS=$(echo "$ACCOUNT_DATA" | sed -n '3p' | strip_cast)
+CURRENT_LT=$(echo "$ACCOUNT_DATA" | sed -n '4p' | strip_cast)
+LTV=$(echo "$ACCOUNT_DATA" | sed -n '5p' | strip_cast)
+HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | strip_cast)
 
 COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / 100000000" | bc)
 DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / 100000000" | bc)
@@ -84,7 +87,7 @@ fi
 
 # === Per-Asset Delegation & Debt ===
 if [ -n "$SYMBOL" ]; then
-  ASSETS="[\"$SYMBOL\"]"
+  ASSETS="$SYMBOL"
 else
   ASSETS=$(jq -r '.assets | keys | .[]' "$CONFIG")
 fi
@@ -106,14 +109,14 @@ for SYM in $ASSETS; do
     "$ASSET_ADDR" \
     --rpc-url "$RPC_URL" 2>/dev/null || echo "")
   
-  VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | tr -d ' ')
+  VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | strip_cast)
 
   # Delegation allowance
   ALLOWANCE_RAW=$(cast call "$VAR_DEBT_TOKEN" \
     "borrowAllowance(address,address)(uint256)" \
     "$DELEGATOR" "$AGENT_ADDR" \
     --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
-  ALLOWANCE_RAW=$(echo "$ALLOWANCE_RAW" | tr -d ' ')
+  ALLOWANCE_RAW=$(echo "$ALLOWANCE_RAW" | strip_cast)
   ALLOWANCE=$(echo "scale=$DECIMALS; $ALLOWANCE_RAW / (10^$DECIMALS)" | bc)
 
   # Current debt on this asset
@@ -121,7 +124,7 @@ for SYM in $ASSETS; do
     "balanceOf(address)(uint256)" \
     "$DELEGATOR" \
     --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
-  DEBT_RAW=$(echo "$DEBT_RAW" | tr -d ' ')
+  DEBT_RAW=$(echo "$DEBT_RAW" | strip_cast)
   DEBT=$(echo "scale=$DECIMALS; $DEBT_RAW / (10^$DECIMALS)" | bc)
 
   # Agent's token balance
@@ -129,7 +132,7 @@ for SYM in $ASSETS; do
     "balanceOf(address)(uint256)" \
     "$AGENT_ADDR" \
     --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
-  AGENT_TOKEN_RAW=$(echo "$AGENT_TOKEN_RAW" | tr -d ' ')
+  AGENT_TOKEN_RAW=$(echo "$AGENT_TOKEN_RAW" | strip_cast)
   AGENT_TOKEN=$(echo "scale=$DECIMALS; $AGENT_TOKEN_RAW / (10^$DECIMALS)" | bc)
 
   if [ "$JSON_OUTPUT" = true ]; then
