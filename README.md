@@ -207,3 +207,7 @@ See [safety.md](safety.md) for the full threat model and emergency procedures.
 | [deployments.md](deployments.md) | All Aave V2/V3 contract + debt token addresses |
 | [contracts.md](contracts.md) | Core contract addresses and delegator setup commands |
 | [safety.md](safety.md) | Threat model, risk mitigations, emergency procedures |
+
+## Download History
+
+[![Download History](https://skill-history.com/chart/aaronjmars/agent-credit.svg)](https://skill-history.com/aaronjmars/agent-credit)
