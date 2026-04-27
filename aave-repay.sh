@@ -166,6 +166,9 @@ fi
 
 echo "  Pool.repay($ASSET_ADDR, $REPAY_AMOUNT, 2, $DELEGATOR)"
 
+# Capture without aborting on non-zero so the error parser below can run
+# (under `set -e`, a top-level `var=$(cmd)` exits the script when cmd fails).
+TX_EXIT=0
 TX_HASH=$(cast send "$POOL" \
   "repay(address,uint256,uint256,address)" \
   "$ASSET_ADDR" \
@@ -174,9 +177,10 @@ TX_HASH=$(cast send "$POOL" \
   "$DELEGATOR" \
   --private-key "$AGENT_PK" \
   --rpc-url "$RPC_URL" \
-  --json 2>/dev/null | jq -r '.transactionHash // .hash // empty')
+  --json 2>/dev/null | jq -r '.transactionHash // .hash // empty') || TX_EXIT=$?
 
 if [ -z "$TX_HASH" ]; then
+  TX_EXIT=0
   TX_OUTPUT=$(cast send "$POOL" \
     "repay(address,uint256,uint256,address)" \
     "$ASSET_ADDR" \
@@ -184,7 +188,7 @@ if [ -z "$TX_HASH" ]; then
     2 \
     "$DELEGATOR" \
     --private-key "$AGENT_PK" \
-    --rpc-url "$RPC_URL" 2>&1)
+    --rpc-url "$RPC_URL" 2>&1) || TX_EXIT=$?
   echo "$TX_OUTPUT"
   TX_HASH=$(echo "$TX_OUTPUT" | grep -oE '0x[a-fA-F0-9]{64}' | head -1 || echo "")
 fi
