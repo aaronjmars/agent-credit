@@ -175,6 +175,9 @@ echo ""
 # interestRateMode: 2 = variable rate
 # referralCode: 0 (inactive)
 # onBehalfOf: delegator address (debt goes to them)
+# Capture without aborting on non-zero so the error parser below can run
+# (under `set -e`, a top-level `var=$(cmd)` exits the script when cmd fails).
+TX_EXIT=0
 TX_OUTPUT=$(cast send "$POOL" \
   "borrow(address,uint256,uint256,uint16,address)" \
   "$ASSET_ADDR" \
@@ -185,8 +188,7 @@ TX_OUTPUT=$(cast send "$POOL" \
   --private-key "$AGENT_PK" \
   --rpc-url "$RPC_URL" \
   --gas-limit 500000 \
-  --json 2>&1)
-TX_EXIT=$?
+  --json 2>&1) || TX_EXIT=$?
 
 if [ $TX_EXIT -ne 0 ]; then
   # Parse common errors into human-readable messages
