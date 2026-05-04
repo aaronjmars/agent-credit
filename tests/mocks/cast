@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# Mock for `cast` (Foundry) — drives aave-borrow.sh from canned scenario data.
+#
+# Scenarios are passed via env vars exported by the test harness:
+#   MOCK_AGENT_ADDR              — agent address (cast wallet address)
+#   MOCK_ADDRESSES_PROVIDER      — addresses provider
+#   MOCK_ORACLE                  — price oracle
+#   MOCK_PRICE_<SYMBOL>          — asset price in base currency (8-dec USD)
+#                                  e.g. MOCK_PRICE_USDC, MOCK_PRICE_WETH
+#   MOCK_VAR_DEBT_<SYMBOL>       — variable debt token addr for symbol
+#   MOCK_ATOKEN_<SYMBOL>         — aToken (placeholder)
+#   MOCK_STABLE_DEBT_<SYMBOL>    — stable debt token (placeholder)
+#   MOCK_ALLOWANCE_RAW           — borrow allowance (raw)
+#   MOCK_TOTAL_COLLATERAL_BASE   — base-currency collateral (uint, 8-dec)
+#   MOCK_TOTAL_DEBT_BASE         — base-currency debt
+#   MOCK_AVAILABLE_BORROWS_BASE  — base-currency available borrows
+#   MOCK_LIQ_THRESHOLD_BPS       — liquidation threshold bps
+#   MOCK_LTV_BPS                 — LTV bps (filler)
+#   MOCK_HEALTH_FACTOR_RAW       — current HF (1e18 scale) or MAX_UINT
+#   MOCK_AGENT_BALANCE_WEI       — agent wallet balance (wei)
+#   MOCK_GAS_PRICE_WEI           — gas price (wei)
+#   MOCK_TX_JSON                 — JSON to emit on `cast send` success
+#
+# Address-to-symbol resolution: the mock reads the config file at $CONFIG and
+# inverts the asset map.
+
+set -u
+
+CONFIG_PATH="${CONFIG:-$HOME/.openclaw/skills/aave-delegation/config.json}"
+
+# Resolve symbol from a 0x-address by scanning config.assets
+addr_to_symbol() {
+  local target="$1"
+  # Lowercase compare to be safe
+  local lower
+  lower=$(printf '%s' "$target" | tr '[:upper:]' '[:lower:]')
+  jq -r --arg a "$lower" '
+    .assets
+    | to_entries[]
+    | select((.value.address | ascii_downcase) == $a)
+    | .key
+  ' "$CONFIG_PATH" 2>/dev/null | head -n1
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  wallet)
+    # `cast wallet address <PK>` — emit fixed agent addr
+    if [ "${1:-}" = "address" ]; then
+      printf '%s\n' "${MOCK_AGENT_ADDR:-0x000000000000000000000000000000000000A6E7}"
+      exit 0
+    fi
+    ;;
+  call)
+    # `cast call <to> <sig> [arg...] --rpc-url <url>`
+    to="$1"; shift
+    sig="$1"; shift
+    # Collect positional args (stop at flags)
+    args=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --*)
+          shift
+          [ $# -gt 0 ] && shift
+          ;;
+        *)
+          args+=("$1")
+          shift
+          ;;
+      esac
+    done
+
+    case "$sig" in
+      "ADDRESSES_PROVIDER()(address)")
+        printf '%s\n' "${MOCK_ADDRESSES_PROVIDER:-0x0000000000000000000000000000000000000AAA}"
+        exit 0
+        ;;
+      "getPriceOracle()(address)")
+        printf '%s\n' "${MOCK_ORACLE:-0x0000000000000000000000000000000000000BBB}"
+        exit 0
+        ;;
+      "getAssetPrice(address)(uint256)")
+        sym=$(addr_to_symbol "${args[0]}")
+        var="MOCK_PRICE_${sym}"
+        printf '%s\n' "${!var:-0}"
+        exit 0
+        ;;
+      "getReserveTokensAddresses(address)(address,address,address)")
+        sym=$(addr_to_symbol "${args[0]}")
+        a="MOCK_ATOKEN_${sym}"
+        s="MOCK_STABLE_DEBT_${sym}"
+        v="MOCK_VAR_DEBT_${sym}"
+        printf '%s\n%s\n%s\n' \
+          "${!a:-0x0000000000000000000000000000000000000A01}" \
+          "${!s:-0x0000000000000000000000000000000000000A02}" \
+          "${!v:-0x0000000000000000000000000000000000000A03}"
+        exit 0
+        ;;
+      "borrowAllowance(address,address)(uint256)")
+        printf '%s\n' "${MOCK_ALLOWANCE_RAW:-0}"
+        exit 0
+        ;;
+      "getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)")
+        printf '%s\n' "${MOCK_TOTAL_COLLATERAL_BASE:-0}"
+        printf '%s\n' "${MOCK_TOTAL_DEBT_BASE:-0}"
+        printf '%s\n' "${MOCK_AVAILABLE_BORROWS_BASE:-0}"
+        printf '%s\n' "${MOCK_LIQ_THRESHOLD_BPS:-8000}"
+        printf '%s\n' "${MOCK_LTV_BPS:-7500}"
+        printf '%s\n' "${MOCK_HEALTH_FACTOR_RAW:-115792089237316195423570985008687907853269984665640564039457584007913129639935}"
+        exit 0
+        ;;
+      "balanceOf(address)(uint256)")
+        printf '%s\n' "${MOCK_TOKEN_BALANCEOF:-0}"
+        exit 0
+        ;;
+    esac
+    echo "[mock cast] unhandled call: to=$to sig=$sig" >&2
+    exit 1
+    ;;
+  balance)
+    printf '%s\n' "${MOCK_AGENT_BALANCE_WEI:-1000000000000000000}"
+    exit 0
+    ;;
+  from-wei)
+    # crude: divide arg by 1e18 with bc
+    val="${1:-0}"
+    echo "scale=18; $val / 1000000000000000000" | bc
+    exit 0
+    ;;
+  gas-price)
+    printf '%s\n' "${MOCK_GAS_PRICE_WEI:-1000000000}"
+    exit 0
+    ;;
+  send)
+    # `cast send <to> <sig> ...` — emit canned JSON
+    printf '%s\n' "${MOCK_TX_JSON:-{\"transactionHash\":\"0xdeadbeef\"\}}"
+    exit 0
+    ;;
+esac
+
+echo "[mock cast] unhandled command: $cmd $*" >&2
+exit 1
