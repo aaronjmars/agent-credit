@@ -51,10 +51,23 @@ MIN_HF="${AAVE_MIN_HEALTH_FACTOR:-$(jq -r '.safety.minHealthFactor // "1.5"' "$C
 MAX_BORROW=$(jq -r '.safety.maxBorrowPerTx // "1000"' "$CONFIG")
 MAX_BORROW_UNIT=$(jq -r '.safety.maxBorrowPerTxUnit // "USDC"' "$CONFIG")
 
+# Resolve Aave price oracle once — used by Safety Check 1 (cross-asset cap)
+# and Safety Check 3 (projected health factor). Both checks need to convert
+# the borrow amount into the pool's base currency.
+ADDRESSES_PROVIDER=$(cast call "$POOL" "ADDRESSES_PROVIDER()(address)" \
+  --rpc-url "$RPC_URL" | strip_cast)
+ORACLE=$(cast call "$ADDRESSES_PROVIDER" "getPriceOracle()(address)" \
+  --rpc-url "$RPC_URL" | strip_cast)
+ASSET_PRICE=$(cast call "$ORACLE" "getAssetPrice(address)(uint256)" \
+  "$ASSET_ADDR" --rpc-url "$RPC_URL" | strip_cast)
+# Borrow value in base currency (Aave V3 returns USD with 8 decimals on most chains)
+BORROW_BASE=$(echo "$AMOUNT_RAW * $ASSET_PRICE / (10^$DECIMALS)" | bc)
+BORROW_USD=$(echo "scale=2; $BORROW_BASE / 100000000" | bc)
+
 echo "=== Aave V3 Credit Delegation Borrow ==="
 echo "  Chain:      $CHAIN"
 echo "  Asset:      $SYMBOL ($ASSET_ADDR)"
-echo "  Amount:     $AMOUNT $SYMBOL ($AMOUNT_RAW raw)"
+echo "  Amount:     $AMOUNT $SYMBOL ($AMOUNT_RAW raw, ~\$$BORROW_USD)"
 echo "  Delegator:  $DELEGATOR"
 echo "  Agent:      $AGENT_ADDR"
 echo "  Pool:       $POOL"
@@ -62,15 +75,25 @@ echo ""
 
 # === SAFETY CHECK 1: Per-transaction cap ===
 echo "--- Safety Check 1: Transaction Cap ---"
-# Simple check — if same unit, compare directly
-if [ "$SYMBOL" = "$MAX_BORROW_UNIT" ]; then
-  if (( $(echo "$AMOUNT > $MAX_BORROW" | bc -l) )); then
-    echo -e "${RED}✗ AMOUNT_EXCEEDS_CAP: $AMOUNT $SYMBOL exceeds max $MAX_BORROW $MAX_BORROW_UNIT per tx${NC}"
-    echo "  Update safety.maxBorrowPerTx in config to increase limit."
-    exit 1
-  fi
+# Compare in base currency so the cap binds across assets — borrowing 1 WETH
+# against a "1000 USDC" cap must be rejected, not silently passed.
+CAP_ASSET_ADDR=$(jq -r ".assets[\"$MAX_BORROW_UNIT\"].address // empty" "$CONFIG")
+if [ -z "$CAP_ASSET_ADDR" ]; then
+  echo -e "${RED}✗ CAP_UNIT_NOT_CONFIGURED: safety.maxBorrowPerTxUnit '$MAX_BORROW_UNIT' is not in config.assets${NC}"
+  echo "  Add '$MAX_BORROW_UNIT' to assets, or set maxBorrowPerTxUnit to a configured asset."
+  exit 1
 fi
-echo -e "${GREEN}✓${NC} Amount within per-tx cap ($MAX_BORROW $MAX_BORROW_UNIT)"
+CAP_PRICE=$(cast call "$ORACLE" "getAssetPrice(address)(uint256)" \
+  "$CAP_ASSET_ADDR" --rpc-url "$RPC_URL" | strip_cast)
+CAP_BASE=$(echo "$MAX_BORROW * $CAP_PRICE" | bc | cut -d'.' -f1)
+CAP_USD=$(echo "scale=2; $CAP_BASE / 100000000" | bc)
+
+if (( $(echo "$BORROW_BASE > $CAP_BASE" | bc) )); then
+  echo -e "${RED}✗ AMOUNT_EXCEEDS_CAP: $AMOUNT $SYMBOL (~\$$BORROW_USD) exceeds cap $MAX_BORROW $MAX_BORROW_UNIT (~\$$CAP_USD)${NC}"
+  echo "  Update safety.maxBorrowPerTx in config to increase limit."
+  exit 1
+fi
+echo -e "${GREEN}✓${NC} Amount within per-tx cap (~\$$BORROW_USD ≤ ~\$$CAP_USD)"
 
 # === SAFETY CHECK 2: Delegation allowance ===
 echo "--- Safety Check 2: Delegation Allowance ---"
@@ -113,6 +136,7 @@ ACCOUNT_DATA=$(cast call "$POOL" \
 TOTAL_COLLATERAL=$(echo "$ACCOUNT_DATA" | sed -n '1p' | strip_cast)
 TOTAL_DEBT=$(echo "$ACCOUNT_DATA" | sed -n '2p' | strip_cast)
 AVAILABLE_BORROWS=$(echo "$ACCOUNT_DATA" | sed -n '3p' | strip_cast)
+LIQ_THRESHOLD=$(echo "$ACCOUNT_DATA" | sed -n '4p' | strip_cast)
 HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | strip_cast)
 
 MAX_UINT="115792089237316195423570985008687907853269984665640564039457584007913129639935"
@@ -144,7 +168,26 @@ if [ "$AVAILABLE_BORROWS" = "0" ]; then
   exit 1
 fi
 
-echo -e "${GREEN}✓${NC} Health factor OK: $HF_DISPLAY (minimum: $MIN_HF)"
+# Project HF after this borrow — Aave only reverts at HF<1.0, so without
+# this check the script would silently honour borrows that drop HF below
+# the configured MIN_HF (e.g. 1.5 → 1.05). LIQ_THRESHOLD is in bps.
+ADJ_COLLATERAL=$(echo "$TOTAL_COLLATERAL * $LIQ_THRESHOLD / 10000" | bc)
+PROJ_DEBT=$(echo "$TOTAL_DEBT + $BORROW_BASE" | bc)
+if [ "$PROJ_DEBT" = "0" ]; then
+  PROJ_HF_DISPLAY="∞"
+  PROJ_HF="999"
+else
+  PROJ_HF=$(echo "scale=4; $ADJ_COLLATERAL / $PROJ_DEBT" | bc)
+  PROJ_HF_DISPLAY="$PROJ_HF"
+fi
+
+if (( $(echo "$PROJ_HF < $MIN_HF" | bc -l) )); then
+  echo -e "${RED}✗ PROJECTED_HF_BELOW_MIN: borrow would drop HF to $PROJ_HF_DISPLAY (minimum: $MIN_HF)${NC}"
+  echo "  Reduce borrow amount, add collateral, or repay existing debt."
+  exit 1
+fi
+
+echo -e "${GREEN}✓${NC} Health factor OK: $HF_DISPLAY → $PROJ_HF_DISPLAY post-borrow (minimum: $MIN_HF)"
 
 # === SAFETY CHECK 4: Agent has enough gas ===
 echo "--- Safety Check 4: Gas Balance ---"
