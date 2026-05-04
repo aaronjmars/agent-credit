@@ -54,15 +54,35 @@ MAX_BORROW_UNIT=$(jq -r '.safety.maxBorrowPerTxUnit // "USDC"' "$CONFIG")
 # Resolve Aave price oracle once — used by Safety Check 1 (cross-asset cap)
 # and Safety Check 3 (projected health factor). Both checks need to convert
 # the borrow amount into the pool's base currency.
+#
+# === Base-currency assumption ===
+# Aave V3's price oracle returns prices in a single "base currency" with a
+# fixed number of decimals (BASE_CURRENCY_UNIT on the oracle contract).
+# Most V3 markets — including Ethereum mainnet, Polygon, Optimism, Arbitrum,
+# and Base — use **USD with 8 decimals** (BASE_CURRENCY_UNIT = 1e8). Some
+# deployments (notably the original Aave V2 ETH market and a handful of L2
+# variants) instead denominate in **ETH with 18 decimals**. If you're
+# pointing this script at such a market, override via:
+#
+#   export AAVE_BASE_CURRENCY_DECIMALS=18
+#
+# This only affects the `~$X` *display* values printed to the user; the
+# safety comparisons (cap, HF projection) are done in base-currency units on
+# both sides of every inequality, so they remain correct regardless of the
+# chosen decimals. To verify the right value for a market, query the
+# oracle's BASE_CURRENCY_UNIT() getter and confirm it equals 10^DECIMALS.
+BASE_CURRENCY_DECIMALS="${AAVE_BASE_CURRENCY_DECIMALS:-8}"
+BASE_CURRENCY_UNIT=$(echo "10^$BASE_CURRENCY_DECIMALS" | bc)
+
 ADDRESSES_PROVIDER=$(cast call "$POOL" "ADDRESSES_PROVIDER()(address)" \
   --rpc-url "$RPC_URL" | strip_cast)
 ORACLE=$(cast call "$ADDRESSES_PROVIDER" "getPriceOracle()(address)" \
   --rpc-url "$RPC_URL" | strip_cast)
 ASSET_PRICE=$(cast call "$ORACLE" "getAssetPrice(address)(uint256)" \
   "$ASSET_ADDR" --rpc-url "$RPC_URL" | strip_cast)
-# Borrow value in base currency (Aave V3 returns USD with 8 decimals on most chains)
+# Borrow value in base currency (Aave V3 returns USD with 8 decimals on most chains; see note above)
 BORROW_BASE=$(echo "$AMOUNT_RAW * $ASSET_PRICE / (10^$DECIMALS)" | bc)
-BORROW_USD=$(echo "scale=2; $BORROW_BASE / 100000000" | bc)
+BORROW_USD=$(echo "scale=2; $BORROW_BASE / $BASE_CURRENCY_UNIT" | bc)
 
 echo "=== Aave V3 Credit Delegation Borrow ==="
 echo "  Chain:      $CHAIN"
@@ -86,7 +106,7 @@ fi
 CAP_PRICE=$(cast call "$ORACLE" "getAssetPrice(address)(uint256)" \
   "$CAP_ASSET_ADDR" --rpc-url "$RPC_URL" | strip_cast)
 CAP_BASE=$(echo "$MAX_BORROW * $CAP_PRICE" | bc | cut -d'.' -f1)
-CAP_USD=$(echo "scale=2; $CAP_BASE / 100000000" | bc)
+CAP_USD=$(echo "scale=2; $CAP_BASE / $BASE_CURRENCY_UNIT" | bc)
 
 if (( $(echo "$BORROW_BASE > $CAP_BASE" | bc) )); then
   echo -e "${RED}✗ AMOUNT_EXCEEDS_CAP: $AMOUNT $SYMBOL (~\$$BORROW_USD) exceeds cap $MAX_BORROW $MAX_BORROW_UNIT (~\$$CAP_USD)${NC}"
@@ -148,8 +168,8 @@ else
   HF_DISPLAY="$HF"
 fi
 
-COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / 100000000" | bc)
-DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / 100000000" | bc)
+COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / $BASE_CURRENCY_UNIT" | bc)
+DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / $BASE_CURRENCY_UNIT" | bc)
 
 echo "  Current HF:     $HF_DISPLAY"
 echo "  Collateral:     \$$COLLATERAL_USD"
