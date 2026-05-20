@@ -87,6 +87,15 @@ else
   ok "DataProvider address: $DATA_PROVIDER"
 fi
 
+# Aave V3's price oracle denominates everything in a single "base currency"
+# with a fixed number of decimals. USD/8 covers Ethereum, Polygon, Arbitrum,
+# Optimism, and Base; a handful of V2/L2 variants use ETH/18. aave-borrow.sh
+# respects AAVE_BASE_CURRENCY_DECIMALS — match it here so this setup check
+# doesn't print collateral/debt figures off by 1e10 against ETH-denominated
+# markets.
+BASE_CURRENCY_DECIMALS="${AAVE_BASE_CURRENCY_DECIMALS:-8}"
+BASE_CURRENCY_UNIT=$(echo "10^$BASE_CURRENCY_DECIMALS" | bc)
+
 # 4. Check RPC connectivity
 echo ""
 echo "--- Network ---"
@@ -196,10 +205,10 @@ if [ -n "$POOL" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ]; then
     AVAILABLE_BORROWS=$(echo "$ACCOUNT_DATA" | sed -n '3p' | strip_cast)
     HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | strip_cast)
     
-    # Values are in base currency (USD with 8 decimals)
-    COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / 100000000" | bc 2>/dev/null || echo "?")
-    DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / 100000000" | bc 2>/dev/null || echo "?")
-    AVAILABLE_USD=$(echo "scale=2; $AVAILABLE_BORROWS / 100000000" | bc 2>/dev/null || echo "?")
+    # Values are in base currency — usually USD/8-dec, override via AAVE_BASE_CURRENCY_DECIMALS
+    COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / $BASE_CURRENCY_UNIT" | bc 2>/dev/null || echo "?")
+    DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / $BASE_CURRENCY_UNIT" | bc 2>/dev/null || echo "?")
+    AVAILABLE_USD=$(echo "scale=2; $AVAILABLE_BORROWS / $BASE_CURRENCY_UNIT" | bc 2>/dev/null || echo "?")
     
     if [ "$HEALTH_FACTOR_RAW" = "115792089237316195423570985008687907853269984665640564039457584007913129639935" ]; then
       HF="∞ (no debt)"
