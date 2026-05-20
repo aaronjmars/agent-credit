@@ -263,6 +263,7 @@ aave-borrow.sh USDC 500
 | `AAVE_DELEGATOR_ADDRESS`    | `delegatorAddress`     |
 | `AAVE_POOL_ADDRESS`         | `poolAddress`          |
 | `AAVE_MIN_HEALTH_FACTOR`    | `safety.minHealthFactor` |
+| `AAVE_BASE_CURRENCY_DECIMALS` | Decimals of the oracle's base currency unit. Default `8` (USD/1e8) covers Ethereum, Polygon, Arbitrum, Optimism, and Base. Set to `18` for ETH-denominated markets (some V2/L2 variants). |
 
 ## Error Handling
 

@@ -30,6 +30,14 @@ POOL="${AAVE_POOL_ADDRESS:-$(jq -r '.poolAddress' "$CONFIG")}"
 DATA_PROVIDER=$(jq -r '.dataProviderAddress' "$CONFIG")
 AGENT_ADDR=$(cast wallet address "$AGENT_PK")
 
+# Aave V3's price oracle denominates everything in a single "base currency"
+# with a fixed number of decimals. USD/8 is the default across Ethereum,
+# Polygon, Arbitrum, Optimism, and Base; ETH/18 is used by a handful of V2/L2
+# variants. aave-borrow.sh respects AAVE_BASE_CURRENCY_DECIMALS — match it
+# here so the displayed USD figures don't silently diverge across scripts.
+BASE_CURRENCY_DECIMALS="${AAVE_BASE_CURRENCY_DECIMALS:-8}"
+BASE_CURRENCY_UNIT=$(echo "10^$BASE_CURRENCY_DECIMALS" | bc)
+
 # === Health Factor ===
 ACCOUNT_DATA=$(cast call "$POOL" \
   "getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)" \
@@ -43,9 +51,9 @@ CURRENT_LT=$(echo "$ACCOUNT_DATA" | sed -n '4p' | strip_cast)
 LTV=$(echo "$ACCOUNT_DATA" | sed -n '5p' | strip_cast)
 HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | strip_cast)
 
-COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / 100000000" | bc)
-DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / 100000000" | bc)
-AVAILABLE_USD=$(echo "scale=2; $AVAILABLE_BORROWS / 100000000" | bc)
+COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / $BASE_CURRENCY_UNIT" | bc)
+DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / $BASE_CURRENCY_UNIT" | bc)
+AVAILABLE_USD=$(echo "scale=2; $AVAILABLE_BORROWS / $BASE_CURRENCY_UNIT" | bc)
 
 MAX_UINT="115792089237316195423570985008687907853269984665640564039457584007913129639935"
 if [ "$HEALTH_FACTOR_RAW" = "$MAX_UINT" ]; then
