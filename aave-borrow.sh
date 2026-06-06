@@ -214,8 +214,22 @@ echo "--- Safety Check 4: Gas Balance ---"
 AGENT_BALANCE=$(cast balance "$AGENT_ADDR" --rpc-url "$RPC_URL")
 AGENT_ETH=$(cast from-wei "$AGENT_BALANCE")
 # Aave borrow tx uses ~300k-500k gas. Estimate cost conservatively.
-GAS_PRICE=$(cast gas-price --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
-MIN_GAS_WEI=$(echo "$GAS_PRICE * 500000" | bc)
+GAS_PRICE=$(cast gas-price --rpc-url "$RPC_URL" 2>/dev/null || echo "")
+
+# If the gas-price query failed or returned 0 (transient RPC issue, or a
+# chain that doesn't expose eth_gasPrice the way cast expects), fall back to
+# a conservative floor instead of multiplying through with 0. Otherwise
+# MIN_GAS_WEI collapses to 0 and the `$AGENT_BALANCE < 0` comparison below
+# silently green-lights any non-zero balance — exactly the kind of safety
+# contract drift this skill is meant to catch. 1e14 wei = 0.0001 ETH covers
+# a 500k-gas borrow at ~200 gwei on every EVM chain Aave is deployed on.
+if [ -z "$GAS_PRICE" ] || [ "$GAS_PRICE" = "0" ]; then
+  MIN_GAS_WEI="100000000000000"
+  GAS_NOTE=" (RPC gas-price unavailable — using 0.0001 ETH floor)"
+else
+  MIN_GAS_WEI=$(echo "$GAS_PRICE * 500000" | bc)
+  GAS_NOTE=""
+fi
 
 if [ "$AGENT_BALANCE" = "0" ]; then
   echo -e "${RED}✗ INSUFFICIENT_GAS: Agent wallet has 0 ETH${NC}"
@@ -227,7 +241,7 @@ elif (( $(echo "$AGENT_BALANCE < $MIN_GAS_WEI" | bc) )); then
   echo "  Send at least 0.001 ETH to $AGENT_ADDR on $CHAIN."
   exit 1
 fi
-echo -e "${GREEN}✓${NC} Agent gas balance: $AGENT_ETH ETH"
+echo -e "${GREEN}✓${NC} Agent gas balance: $AGENT_ETH ETH$GAS_NOTE"
 
 # === EXECUTE BORROW ===
 echo ""

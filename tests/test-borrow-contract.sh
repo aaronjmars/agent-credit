@@ -209,6 +209,28 @@ export MOCK_TOKEN_BALANCEOF="100000000"
 run_borrow USDC 100
 expect_success_reaching_execute "positive (100 USDC within cap & HF safe)" $?
 
+# ---- Scenario 4: gas-price-zero floor --------------------------------------
+# `cast gas-price` returning 0 (transient RPC issue / chain quirk) used to
+# collapse MIN_GAS_WEI to 0 and silently green-light Check 4 for any non-zero
+# balance. Post-fix: the script falls back to a 0.0001 ETH floor (1e14 wei),
+# so an agent balance of 1e10 wei (0.00000001 ETH) must trip
+# INSUFFICIENT_GAS — even though gas-price is 0.
+echo
+echo "[scenario 4] gas-price-zero: 1e10 wei balance must fail despite gas-price=0"
+reset_mocks
+export MOCK_PRICE_USDC="100000000"
+export MOCK_PRICE_WETH="300000000000"
+export MOCK_TOTAL_COLLATERAL_BASE="1000000000000"
+export MOCK_TOTAL_DEBT_BASE="0"
+export MOCK_AVAILABLE_BORROWS_BASE="800000000000"
+export MOCK_LIQ_THRESHOLD_BPS="8000"
+export MOCK_HEALTH_FACTOR_RAW="115792089237316195423570985008687907853269984665640564039457584007913129639935"
+export MOCK_ALLOWANCE_RAW="1000000000000"
+export MOCK_AGENT_BALANCE_WEI="10000000000"   # 1e10 wei = 0.00000001 ETH
+export MOCK_GAS_PRICE_WEI="0"                 # simulate RPC quirk / failure
+run_borrow USDC 100
+expect_fail_with_tag "gas-price-zero floor (0.00000001 ETH < 0.0001 ETH floor)" "INSUFFICIENT_GAS" $?
+
 echo
 echo "=== summary ==="
 echo "  passed: $PASS"
