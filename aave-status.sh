@@ -8,7 +8,6 @@ strip_cast() { sed 's/ *\[.*\]//' | tr -d ' '; }
 
 SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/skills/aave-delegation}"
 CONFIG="$SKILL_DIR/config.json"
-SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Parse args
 SYMBOL=""
@@ -47,8 +46,6 @@ ACCOUNT_DATA=$(cast call "$POOL" \
 TOTAL_COLLATERAL=$(echo "$ACCOUNT_DATA" | sed -n '1p' | strip_cast)
 TOTAL_DEBT=$(echo "$ACCOUNT_DATA" | sed -n '2p' | strip_cast)
 AVAILABLE_BORROWS=$(echo "$ACCOUNT_DATA" | sed -n '3p' | strip_cast)
-CURRENT_LT=$(echo "$ACCOUNT_DATA" | sed -n '4p' | strip_cast)
-LTV=$(echo "$ACCOUNT_DATA" | sed -n '5p' | strip_cast)
 HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | strip_cast)
 
 COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / $BASE_CURRENCY_UNIT" | bc)
