@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      # Lint every bash script in the repo. tests/mocks/cast has a bash shebang
+      # but no .sh suffix, so it is listed explicitly. --severity=warning gates
+      # on real bugs (undefined vars, dead assignments, quoting hazards) without
+      # failing on info/style nitpicks.
+      - name: Run shellcheck
+        run: |
+          shellcheck --severity=warning \
+            aave-borrow.sh \
+            aave-repay.sh \
+            aave-setup.sh \
+            aave-status.sh \
+            tests/test-borrow-contract.sh \
+            tests/mocks/cast
+
+  test:
+    name: Contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The borrow scripts and the mock cast use jq + bc. jq ships on the
+      # runner image; install bc explicitly so the suite never depends on it
+      # being preinstalled.
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y bc jq
+
+      # Exercises aave-borrow.sh against tests/mocks/cast — no network, no real
+      # RPC. Covers the four safety-contract gaps closed in PRs #5–#7
+      # (cross-asset cap, projected health factor, gas-price-zero floor).
+      - name: Run borrow contract tests
+        run: bash tests/test-borrow-contract.sh
