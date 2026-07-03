@@ -71,7 +71,7 @@ The **3rd return value** is the VariableDebtToken — that's the one the delegat
 
 ## Delegator Setup
 
-The delegator sets up collateral and delegation from **their own wallet** — via [app.aave.com](https://app.aave.com) and a block explorer. See [README.md](README.md) for the full step-by-step guide.
+The delegator sets up collateral and delegation from **their own wallet** — via [app.aave.com](https://app.aave.com) and a block explorer. See [README.md](.github/README.md) for the full step-by-step guide.
 
 The delegator's private key should **never** be in this repo or config.
 
