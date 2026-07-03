@@ -4,7 +4,7 @@ Give your AI agent a credit line. It borrows from Aave when it needs funds, and 
 
 Works on **Aave V2** and **Aave V3**. Preconfigured for Base, Ethereum, Polygon, and Arbitrum — but works on any EVM chain where Aave is deployed.
 
-![Agent Credit — Aave Credit Delegation](img/credit.png)
+![Agent Credit — Aave Credit Delegation](../img/credit.png)
 
 ## Compatible With
 
@@ -75,7 +75,7 @@ You control exposure through:
 - **Health factor floor** (`safety.minHealthFactor`, default 1.5)
 - **Instant revocation** — set delegation to 0 at any time
 
-See [safety.md](safety.md) for the full threat model and emergency procedures.
+See [safety.md](../safety.md) for the full threat model and emergency procedures.
 
 ---
 
@@ -97,13 +97,13 @@ Each asset on Aave has a **VariableDebtToken** — that's the contract you appro
 
 On [app.aave.com](https://app.aave.com), go to the reserve page for the asset. Click the token icon to expand a dropdown showing the underlying token, the aToken, and the **debt token** address:
 
-![Finding the debt token address on the Aave UI](img/token-find.png)
+![Finding the debt token address on the Aave UI](../img/token-find.png)
 
 Click the debt token address to open it on the block explorer — you'll need it for Step 3.
 
 ### From deployments.md
 
-All debt token addresses for common assets are listed in [deployments.md](deployments.md). Look up your chain and asset.
+All debt token addresses for common assets are listed in [deployments.md](../deployments.md). Look up your chain and asset.
 
 ## Step 3: Approve Delegation
 
@@ -119,9 +119,9 @@ This is the key step. You call `approveDelegation()` on the VariableDebtToken to
    - **amount**: the maximum borrow amount in **raw units** (see note below)
 5. Click **Write** and confirm the transaction in your wallet
 
-![Calling approveDelegation on the block explorer](img/approve.png)
+![Calling approveDelegation on the block explorer](../img/approve.png)
 
-> **Raw units:** Amounts must be in the token's smallest unit. USDC has 6 decimals, so 500 USDC = `500000000`. WETH has 18 decimals, so 0.1 WETH = `100000000000000000`. See [deployments.md](deployments.md) for decimals per asset.
+> **Raw units:** Amounts must be in the token's smallest unit. USDC has 6 decimals, so 500 USDC = `500000000`. WETH has 18 decimals, so 0.1 WETH = `100000000000000000`. See [deployments.md](../deployments.md) for decimals per asset.
 
 ### Approve multiple assets
 
@@ -182,7 +182,7 @@ On [app.aave.com](https://app.aave.com), click **Repay** on any borrow. Standard
 - **Prefer stablecoins for borrowing.** Borrowing USDC against ETH collateral is simpler to reason about than volatile-on-volatile.
 - **Test on a testnet first.** Use Base Sepolia or Ethereum Sepolia with faucet tokens before real funds.
 
-See [safety.md](safety.md) for the full threat model and emergency procedures.
+See [safety.md](../safety.md) for the full threat model and emergency procedures.
 
 ---
 
@@ -191,7 +191,7 @@ See [safety.md](safety.md) for the full threat model and emergency procedures.
 | Action | How |
 |--------|-----|
 | Supply collateral | [app.aave.com](https://app.aave.com) → Supply |
-| Find debt token | [app.aave.com](https://app.aave.com) → Reserve page → token dropdown, or [deployments.md](deployments.md) |
+| Find debt token | [app.aave.com](https://app.aave.com) → Reserve page → token dropdown, or [deployments.md](../deployments.md) |
 | Approve delegation | Block explorer → VariableDebtToken → `approveDelegation(agent, amount)` |
 | Revoke delegation | Block explorer → VariableDebtToken → `approveDelegation(agent, 0)` |
 | Check delegation | `./aave-status.sh` or block explorer → `borrowAllowance(you, agent)` |
@@ -203,7 +203,7 @@ See [safety.md](safety.md) for the full threat model and emergency procedures.
 
 | File | Contents |
 |------|----------|
-| [SKILL.md](SKILL.md) | Agent-facing skill documentation |
-| [deployments.md](deployments.md) | All Aave V2/V3 contract + debt token addresses |
-| [contracts.md](contracts.md) | Core contract addresses and delegator setup commands |
-| [safety.md](safety.md) | Threat model, risk mitigations, emergency procedures |
+| [SKILL.md](../SKILL.md) | Agent-facing skill documentation |
+| [deployments.md](../deployments.md) | All Aave V2/V3 contract + debt token addresses |
+| [contracts.md](../contracts.md) | Core contract addresses and delegator setup commands |
+| [safety.md](../safety.md) | Threat model, risk mitigations, emergency procedures |
