@@ -157,12 +157,9 @@ fi
 echo ""
 echo "--- Step 2: Repay ---"
 
-# For max repay, pass type(uint256).max so Aave repays exact debt amount
-if [ "$AMOUNT_RAW" = "$MAX_UINT" ]; then
-  REPAY_AMOUNT="$MAX_UINT"
-else
-  REPAY_AMOUNT="$AMOUNT_RAW"
-fi
+# On a max repay AMOUNT_RAW is type(uint256).max, which tells Aave to settle
+# the exact debt at execution time rather than a stale quoted amount.
+REPAY_AMOUNT="$AMOUNT_RAW"
 
 echo "  Pool.repay($ASSET_ADDR, $REPAY_AMOUNT, 2, $DELEGATOR)"
 
