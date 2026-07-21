@@ -43,11 +43,11 @@ cat > "$CONFIG_PATH" <<'JSON'
   "rpcUrl": "http://127.0.0.1:0",
   "agentPrivateKey": "0x0000000000000000000000000000000000000000000000000000000000000001",
   "delegatorAddress": "0x000000000000000000000000000000000000DEAD",
-  "poolAddress": "0x0000000000000000000000000000000000000P00",
+  "poolAddress": "0x0000000000000000000000000000000000000F00",
   "dataProviderAddress": "0x000000000000000000000000000000000000DA7A",
   "assets": {
     "USDC": {
-      "address": "0x0000000000000000000000000000000000000U5D",
+      "address": "0x00000000000000000000000000000000000005DC",
       "decimals": 6
     },
     "WETH": {
@@ -72,9 +72,15 @@ FAILURES=()
 run_borrow() {
   local symbol="$1" amount="$2"
   (
+    # Scrub ambient AAVE_* so a developer's shell cannot change what these
+    # scenarios exercise. AAVE_MIN_HEALTH_FACTOR in particular overrides the
+    # config value and would silently retune every health-factor assertion.
+    unset AAVE_RPC_URL AAVE_AGENT_PRIVATE_KEY AAVE_DELEGATOR_ADDRESS \
+          AAVE_POOL_ADDRESS AAVE_MIN_HEALTH_FACTOR AAVE_BASE_CURRENCY_DECIMALS
     export PATH="$MOCKS_DIR:$PATH"
     export SKILL_DIR="$WORK_DIR"
     export CONFIG="$CONFIG_PATH"  # consumed by the mock for addr→symbol lookup
+    export MOCK_SEND_LOG="$WORK_DIR/send.log"
     bash "$BORROW_SH" "$symbol" "$amount"
   ) >"$WORK_DIR/last.out" 2>&1
 }
@@ -126,6 +132,34 @@ expect_success_reaching_execute() {
   echo "  PASS $name (exit=0, reached execute stage)"
 }
 
+# Assert: exactly one `cast send` was issued, with exactly these positional
+# args. Guards the delegation model itself — onBehalfOf must be the delegator,
+# the rate mode must be variable (2), and the amount must be correctly scaled.
+expect_send_args() {
+  local name="$1" expected="$2"
+  local log="$WORK_DIR/send.log"
+  local actual sends
+  sends=$([ -f "$log" ] && wc -l <"$log" || echo 0)
+  if [ "$sends" -ne 1 ]; then
+    FAIL=$((FAIL+1))
+    FAILURES+=("$name: expected exactly 1 cast send, saw $sends")
+    echo "  FAIL $name: expected exactly 1 cast send, saw $sends"
+    [ -f "$log" ] && sed 's/^/    /' "$log"
+    return
+  fi
+  actual=$(cat "$log")
+  if [ "$actual" != "$expected" ]; then
+    FAIL=$((FAIL+1))
+    FAILURES+=("$name: cast send argv mismatch")
+    echo "  FAIL $name: cast send argv mismatch"
+    echo "    expected: $expected"
+    echo "    actual:   $actual"
+    return
+  fi
+  PASS=$((PASS+1))
+  echo "  PASS $name (borrow argv exact)"
+}
+
 # Reset all MOCK_* vars between scenarios so leakage from one to the next
 # can't accidentally green-light a buggy script.
 reset_mocks() {
@@ -140,6 +174,7 @@ reset_mocks() {
         MOCK_HEALTH_FACTOR_RAW \
         MOCK_AGENT_BALANCE_WEI MOCK_GAS_PRICE_WEI \
         MOCK_TOKEN_BALANCEOF MOCK_TX_JSON || true
+  rm -f "$WORK_DIR/send.log"
 }
 
 echo "=== aave-borrow.sh contract tests ==="
@@ -208,6 +243,11 @@ export MOCK_TX_JSON='{"transactionHash":"0xfeedface"}'
 export MOCK_TOKEN_BALANCEOF="100000000"
 run_borrow USDC 100
 expect_success_reaching_execute "positive (100 USDC within cap & HF safe)" $?
+# 100 USDC at 6 decimals = 100000000. Rate mode 2 = variable, referral 0, and
+# onBehalfOf MUST be the delegator — borrowing onBehalfOf the agent would move
+# the debt to the wrong party and break the whole delegation model.
+expect_send_args "positive (borrow argv)" \
+  "0x0000000000000000000000000000000000000F00 borrow(address,uint256,uint256,uint16,address) 0x00000000000000000000000000000000000005DC 100000000 2 0 0x000000000000000000000000000000000000DEAD"
 
 # ---- Scenario 4: gas-price-zero floor --------------------------------------
 # A 0 gas-price (transient RPC issue / chain quirk) must not collapse

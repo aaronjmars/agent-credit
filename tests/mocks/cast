@@ -20,6 +20,8 @@
 #   MOCK_AGENT_BALANCE_WEI       — agent wallet balance (wei)
 #   MOCK_GAS_PRICE_WEI           — gas price (wei)
 #   MOCK_TX_JSON                 — JSON to emit on `cast send` success
+#   MOCK_SEND_LOG                — file to append each `cast send`'s positional
+#                                  argv to (flags omitted); unset = no logging
 #
 # Address-to-symbol resolution: the mock reads the config file at $CONFIG and
 # inverts the asset map.
@@ -133,7 +135,27 @@ case "$cmd" in
     exit 0
     ;;
   send)
-    # `cast send <to> <sig> ...` — emit canned JSON
+    # Record the positional argv (to, sig, args...) so tests can assert on the
+    # transaction actually built. Flags are dropped — they carry the private
+    # key. Without this the mock accepts any arguments, so a script borrowing
+    # onBehalfOf the wrong address would still pass every scenario.
+    if [ -n "${MOCK_SEND_LOG:-}" ]; then
+      send_args=()
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --json) shift ;;
+          --*)
+            shift
+            [ $# -gt 0 ] && shift
+            ;;
+          *)
+            send_args+=("$1")
+            shift
+            ;;
+        esac
+      done
+      printf '%s\n' "${send_args[*]}" >> "$MOCK_SEND_LOG"
+    fi
     printf '%s\n' "${MOCK_TX_JSON:-{\"transactionHash\":\"0xdeadbeef\"\}}"
     exit 0
     ;;
