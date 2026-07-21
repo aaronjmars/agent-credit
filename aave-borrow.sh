@@ -42,13 +42,41 @@ fi
 
 AGENT_ADDR=$(cast wallet address "$AGENT_PK")
 
+# Validate the borrow amount before it reaches bc. A negative amount otherwise
+# passes every safety check — the cap comparison passes, and a negative debt
+# delta *raises* the projected health factor — before failing at the ABI layer.
+# A sub-unit amount truncates to an empty string and crashes bc with no
+# diagnostic.
+if ! [[ "$AMOUNT" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [ "$(echo "$AMOUNT > 0" | bc)" != "1" ]; then
+  echo -e "${RED}✗ INVALID_AMOUNT: '$AMOUNT' must be a positive decimal number${NC}"
+  exit 1
+fi
+
 # Convert human amount to raw (e.g., 100 USDC → 100000000)
 AMOUNT_RAW=$(echo "$AMOUNT * (10^$DECIMALS)" | bc | cut -d'.' -f1)
+
+if [ -z "$AMOUNT_RAW" ] || [ "$AMOUNT_RAW" = "0" ]; then
+  echo -e "${RED}✗ INVALID_AMOUNT: '$AMOUNT' rounds to zero at $DECIMALS decimals${NC}"
+  exit 1
+fi
 
 # Safety config
 MIN_HF="${AAVE_MIN_HEALTH_FACTOR:-$(jq -r '.safety.minHealthFactor // "1.5"' "$CONFIG")}"
 MAX_BORROW=$(jq -r '.safety.maxBorrowPerTx // "1000"' "$CONFIG")
 MAX_BORROW_UNIT=$(jq -r '.safety.maxBorrowPerTxUnit // "USDC"' "$CONFIG")
+
+# Both thresholds are only ever consumed inside `if (( $(... | bc) ))`, where a
+# bc parse error expands to `(( ))` — which bash evaluates as false — and where
+# `set -e` does not apply. A non-numeric or empty value therefore disables the
+# check silently rather than failing. Validate here, at the boundary.
+if ! [[ "$MIN_HF" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo -e "${RED}✗ INVALID_CONFIG: safety.minHealthFactor '$MIN_HF' is not a positive decimal${NC}"
+  exit 1
+fi
+if ! [[ "$MAX_BORROW" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo -e "${RED}✗ INVALID_CONFIG: safety.maxBorrowPerTx '$MAX_BORROW' is not a positive decimal${NC}"
+  exit 1
+fi
 
 # Gas units for the borrow tx. Safety Check 4 reserves this much gas and the
 # send below caps at it, so the two must stay equal — if the cap were higher
@@ -73,6 +101,20 @@ ORACLE=$(cast call "$ADDRESSES_PROVIDER" "getPriceOracle()(address)" \
   --rpc-url "$RPC_URL" | strip_cast)
 ASSET_PRICE=$(cast call "$ORACLE" "getAssetPrice(address)(uint256)" \
   "$ASSET_ADDR" --rpc-url "$RPC_URL" | strip_cast)
+
+# getAssetPrice returns 0 rather than reverting when the oracle has no price
+# source for an address — which is what a typo'd or wrong-chain asset address
+# in config looks like. A zero price makes BORROW_BASE 0, and both value-based
+# safety checks then pass for ANY amount: the cap compares 0 against the cap,
+# and the HF projection adds 0 to existing debt. Refuse to price-blind borrow.
+if [ -z "$ASSET_PRICE" ] || [ "$ASSET_PRICE" = "0" ]; then
+  echo -e "${RED}✗ ORACLE_PRICE_UNAVAILABLE: oracle returned 0 for $SYMBOL ($ASSET_ADDR)${NC}"
+  echo "  Cannot value this borrow, so the per-tx cap and the health-factor"
+  echo "  projection would both pass vacuously."
+  echo "  Check that the $SYMBOL address in $CONFIG is correct for this chain."
+  exit 1
+fi
+
 BORROW_BASE=$(echo "$AMOUNT_RAW * $ASSET_PRICE / (10^$DECIMALS)" | bc)
 BORROW_USD=$(echo "scale=2; $BORROW_BASE / $BASE_CURRENCY_UNIT" | bc)
 
@@ -97,6 +139,14 @@ if [ -z "$CAP_ASSET_ADDR" ]; then
 fi
 CAP_PRICE=$(cast call "$ORACLE" "getAssetPrice(address)(uint256)" \
   "$CAP_ASSET_ADDR" --rpc-url "$RPC_URL" | strip_cast)
+# A zero cap price collapses CAP_BASE to 0, which would reject every borrow
+# rather than permit one — but the diagnostic would be an unrelated
+# AMOUNT_EXCEEDS_CAP, so fail with the real reason.
+if [ -z "$CAP_PRICE" ] || [ "$CAP_PRICE" = "0" ]; then
+  echo -e "${RED}✗ ORACLE_PRICE_UNAVAILABLE: oracle returned 0 for the cap unit $MAX_BORROW_UNIT ($CAP_ASSET_ADDR)${NC}"
+  echo "  Check that the $MAX_BORROW_UNIT address in $CONFIG is correct for this chain."
+  exit 1
+fi
 CAP_BASE=$(echo "$MAX_BORROW * $CAP_PRICE" | bc | cut -d'.' -f1)
 CAP_USD=$(echo "scale=2; $CAP_BASE / $BASE_CURRENCY_UNIT" | bc)
 
@@ -261,25 +311,54 @@ if [ $TX_EXIT -ne 0 ]; then
     echo -e "${RED}✗ INSUFFICIENT_GAS: Agent wallet can't afford gas for this transaction.${NC}"
     echo "  Send more ETH to $AGENT_ADDR on $CHAIN."
   elif echo "$TX_OUTPUT" | grep -qi "revert"; then
-    # Decode Aave-specific revert reasons
-    REASON="$TX_OUTPUT"
-    if echo "$TX_OUTPUT" | grep -q "0x11"; then
-      REASON="Arithmetic overflow — likely insufficient collateral or invalid borrow parameters"
-    elif echo "$TX_OUTPUT" | grep -qi "BORROWING_NOT_ENABLED"; then
+    # Decode Aave-specific revert reasons. Named reasons are matched first: the
+    # panic check below is a substring test, and cast's output routinely
+    # contains addresses and calldata that happen to include "0x11", so
+    # matching it first would shadow every accurate reason with a guess.
+    REASON=""
+    if echo "$TX_OUTPUT" | grep -qi "BORROWING_NOT_ENABLED"; then
       REASON="Borrowing is not enabled for $SYMBOL on this pool"
     elif echo "$TX_OUTPUT" | grep -qi "COLLATERAL_CANNOT_COVER"; then
       REASON="Delegator's collateral cannot cover this borrow amount"
     elif echo "$TX_OUTPUT" | grep -qi "HEALTH_FACTOR_LOWER"; then
       REASON="Borrow would drop the delegator's health factor below liquidation threshold"
+    elif echo "$TX_OUTPUT" | grep -qE '0x4e487b71|Panic.*0x11'; then
+      REASON="Arithmetic overflow — likely insufficient collateral or invalid borrow parameters"
     fi
-    echo -e "${RED}✗ BORROW_REVERTED: $REASON${NC}"
+    # Always carry the raw output; a guessed reason without it is unactionable.
+    if [ -n "$REASON" ]; then
+      echo -e "${RED}✗ BORROW_REVERTED: $REASON${NC}"
+      echo "  Raw: $TX_OUTPUT"
+    else
+      echo -e "${RED}✗ BORROW_REVERTED: $TX_OUTPUT${NC}"
+    fi
   else
     echo -e "${RED}✗ BORROW_FAILED: $TX_OUTPUT${NC}"
   fi
   exit 1
 fi
 
-TX_HASH=$(echo "$TX_OUTPUT" | jq -r '.transactionHash // .hash // empty' 2>/dev/null)
+# The borrow has already landed on-chain at this point — cast exited 0. Parsing
+# must never be allowed to look like failure: `2>&1` above merges cast's stderr
+# warnings into TX_OUTPUT, which breaks jq, and under `set -e` an unguarded
+# top-level assignment would then kill the script with no output at all. An
+# agent reads that as "the borrow failed" and retries, doubling the debt.
+if ! TX_HASH=$(printf '%s' "$TX_OUTPUT" | jq -r '.transactionHash // .hash // empty' 2>/dev/null); then
+  echo -e "${RED}✗ BORROW_SENT_BUT_UNPARSEABLE: the borrow was submitted successfully"
+  echo -e "  but its receipt could not be parsed. DO NOT RETRY.${NC}"
+  echo "  Raw output: $TX_OUTPUT"
+  echo "  Verify the delegator's debt with: ./aave-status.sh $SYMBOL"
+  exit 1
+fi
+
+# Only an explicit failure status is treated as a revert; cast versions that
+# omit the field leave this empty and fall through.
+TX_STATUS=$(printf '%s' "$TX_OUTPUT" | jq -r '.status // empty' 2>/dev/null || echo "")
+if [ "$TX_STATUS" = "0x0" ] || [ "$TX_STATUS" = "0" ]; then
+  echo -e "${RED}✗ BORROW_REVERTED: transaction $TX_HASH was mined but reverted${NC}"
+  echo "  No debt was created and no tokens were received. Gas was still spent."
+  exit 1
+fi
 
 if [ -n "$TX_HASH" ]; then
   echo -e "${GREEN}✓ Borrow successful!${NC}"

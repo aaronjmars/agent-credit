@@ -160,6 +160,22 @@ expect_send_args() {
   echo "  PASS $name (borrow argv exact)"
 }
 
+# Assert: no transaction was broadcast. A rejected borrow that still sent a tx
+# would be the worst possible outcome — the guard fires but the money moves.
+expect_no_send() {
+  local name="$1"
+  local log="$WORK_DIR/send.log"
+  if [ -s "$log" ]; then
+    FAIL=$((FAIL+1))
+    FAILURES+=("$name: expected no cast send, but one was issued")
+    echo "  FAIL $name: expected no cast send, but one was issued"
+    sed 's/^/    /' "$log"
+    return
+  fi
+  PASS=$((PASS+1))
+  echo "  PASS $name (no tx broadcast)"
+}
+
 # Reset all MOCK_* vars between scenarios so leakage from one to the next
 # can't accidentally green-light a buggy script.
 reset_mocks() {
@@ -269,6 +285,77 @@ export MOCK_AGENT_BALANCE_WEI="10000000000"   # 1e10 wei = 0.00000001 ETH
 export MOCK_GAS_PRICE_WEI="0"                 # simulate RPC quirk / failure
 run_borrow USDC 100
 expect_fail_with_tag "gas-price-zero floor (0.00000001 ETH < 0.0001 ETH floor)" "INSUFFICIENT_GAS" $?
+
+# ---- Scenario 5: zero oracle price ------------------------------------------
+# getAssetPrice returns 0 (not a revert) for an address the oracle has no
+# price source for — i.e. a typo'd or wrong-chain asset address. A zero price
+# makes the borrow value 0, which passes the cap check AND leaves the HF
+# projection unchanged, so a huge borrow clears both. Must refuse instead.
+echo
+echo "[scenario 5] zero-oracle-price: must refuse rather than price-blind borrow"
+reset_mocks
+export MOCK_PRICE_USDC="0"                  # oracle has no price source
+export MOCK_PRICE_WETH="300000000000"
+export MOCK_TOTAL_COLLATERAL_BASE="1000000000000"
+export MOCK_TOTAL_DEBT_BASE="500000000000"
+export MOCK_AVAILABLE_BORROWS_BASE="300000000000"
+export MOCK_LIQ_THRESHOLD_BPS="8000"
+export MOCK_HEALTH_FACTOR_RAW="1600000000000000000"
+export MOCK_ALLOWANCE_RAW="100000000000000000000"
+export MOCK_AGENT_BALANCE_WEI="1000000000000000000"
+export MOCK_GAS_PRICE_WEI="1000000000"
+run_borrow USDC 1000000
+expect_fail_with_tag "zero-oracle-price (1M USDC at price 0)" "ORACLE_PRICE_UNAVAILABLE" $?
+expect_no_send "zero-oracle-price (no tx sent)"
+
+# ---- Scenario 6: unusable minHealthFactor -----------------------------------
+# MIN_HF is only consumed inside `if (( $(... | bc) ))`, where a bc parse error
+# expands to `(( ))` = false and `set -e` does not apply. A non-numeric value
+# therefore used to disable BOTH health-factor gates while still printing
+# "Health factor OK". Must fail loudly at the boundary instead.
+echo
+echo "[scenario 6] non-numeric minHealthFactor must abort, not skip the HF gate"
+reset_mocks
+export MOCK_PRICE_USDC="100000000"
+export MOCK_PRICE_WETH="300000000000"
+export MOCK_TOTAL_COLLATERAL_BASE="1000000000000"
+export MOCK_TOTAL_DEBT_BASE="900000000000"   # HF would be 0.89 — deeply unsafe
+export MOCK_AVAILABLE_BORROWS_BASE="300000000000"
+export MOCK_LIQ_THRESHOLD_BPS="8000"
+export MOCK_HEALTH_FACTOR_RAW="890000000000000000"
+export MOCK_ALLOWANCE_RAW="1000000000000"
+export MOCK_AGENT_BALANCE_WEI="1000000000000000000"
+export MOCK_GAS_PRICE_WEI="1000000000"
+(
+  export AAVE_MIN_HEALTH_FACTOR="1,5"        # locale comma — bc cannot parse
+  export PATH="$MOCKS_DIR:$PATH"
+  export SKILL_DIR="$WORK_DIR"
+  export CONFIG="$CONFIG_PATH"
+  export MOCK_SEND_LOG="$WORK_DIR/send.log"
+  bash "$BORROW_SH" USDC 100
+) >"$WORK_DIR/last.out" 2>&1
+expect_fail_with_tag "non-numeric minHealthFactor" "INVALID_CONFIG" $?
+expect_no_send "non-numeric minHealthFactor (no tx sent)"
+
+# ---- Scenario 7: negative amount --------------------------------------------
+# A negative amount passed every check: the cap comparison passes, and a
+# negative debt delta *raises* the projected health factor.
+echo
+echo "[scenario 7] negative amount must be rejected before any check"
+reset_mocks
+export MOCK_PRICE_USDC="100000000"
+export MOCK_PRICE_WETH="300000000000"
+export MOCK_TOTAL_COLLATERAL_BASE="1000000000000"
+export MOCK_TOTAL_DEBT_BASE="500000000000"
+export MOCK_AVAILABLE_BORROWS_BASE="300000000000"
+export MOCK_LIQ_THRESHOLD_BPS="8000"
+export MOCK_HEALTH_FACTOR_RAW="1600000000000000000"
+export MOCK_ALLOWANCE_RAW="1000000000000"
+export MOCK_AGENT_BALANCE_WEI="1000000000000000000"
+export MOCK_GAS_PRICE_WEI="1000000000"
+run_borrow USDC -100
+expect_fail_with_tag "negative amount" "INVALID_AMOUNT" $?
+expect_no_send "negative amount (no tx sent)"
 
 echo
 echo "=== summary ==="
