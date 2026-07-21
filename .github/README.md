@@ -36,7 +36,7 @@ Credit delegation separates two things: **borrowing power** and **delegation app
 Your Collateral (holistic)              Delegation Approvals (isolated)
 ┌─────────────────────────┐             ┌──────────────────────────────┐
 │  $5k ETH                │             │  USDC DebtToken → agent: 500 │
-│  $3k USDC               │  ───LTV───▶ │  WETH DebtToken → agent: 0.5 │
+│  $3k USDC               │  ───LTV───▶ │  WETH DebtToken → agent: 0.1 │
 │  $2k cbETH              │   = $8k     │  cbETH DebtToken → agent: 0  │
 │  Total: $10k @ 80% LTV  │  capacity   └──────────────────────────────┘
 └─────────────────────────┘

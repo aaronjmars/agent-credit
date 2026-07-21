@@ -109,7 +109,7 @@ Delegator (your wallet)                 Agent Wallet (delegatee)
 
 4. **Verify setup**:
    ```bash
-   scripts/aave-setup.sh
+   ./aave-setup.sh
    ```
 
 ## Core Usage
@@ -118,39 +118,36 @@ Delegator (your wallet)                 Agent Wallet (delegatee)
 
 ```bash
 # Full status report
-scripts/aave-status.sh
+./aave-status.sh
 
 # Check specific asset delegation
-scripts/aave-status.sh USDC
+./aave-status.sh USDC
 
 # Just health factor
-scripts/aave-status.sh --health-only
+./aave-status.sh --health-only
 ```
 
 ### Borrow via Delegation
 
 ```bash
 # Borrow 100 USDC
-scripts/aave-borrow.sh USDC 100
+./aave-borrow.sh USDC 100
 
 # Borrow 0.5 WETH
-scripts/aave-borrow.sh WETH 0.5
+./aave-borrow.sh WETH 0.5
 ```
 
-The borrow script automatically:
-1. Checks delegation allowance (sufficient?)
-2. Checks delegator health factor (safe to borrow?)
-3. Executes the borrow
-4. Reports the result
+The borrow script runs four safety checks (see [Safety System](#safety-system)),
+then executes the borrow and reports the result.
 
 ### Repay Debt
 
 ```bash
 # Repay 100 USDC
-scripts/aave-repay.sh USDC 100
+./aave-repay.sh USDC 100
 
 # Repay all USDC debt
-scripts/aave-repay.sh USDC max
+./aave-repay.sh USDC max
 ```
 
 The repay script automatically:
@@ -162,10 +159,12 @@ The repay script automatically:
 
 **Every borrow operation runs these checks BEFORE executing:**
 
-1. **Delegation allowance** — Is the remaining allowance >= requested amount?
-2. **Health factor** — Is the delegator's health factor > `minHealthFactor` (default 1.5) AFTER this borrow?
-3. **Per-tx cap** — Is the amount <= `maxBorrowPerTx`?
-4. **Confirmation** — Logs the full operation details before sending
+1. **Per-tx cap** — amount within configured limit. Compared in the oracle's
+   base currency, so the cap binds across assets.
+2. **Delegation allowance** — sufficient allowance on the debt token
+3. **Health factor** — delegator's position stays above `minHealthFactor`
+   (default 1.5) *after* this borrow, not just before it
+4. **Gas balance** — agent wallet has enough native token for the transaction
 
 If ANY check fails, the borrow is **aborted** with a clear error message.
 
@@ -178,7 +177,7 @@ If ANY check fails, the borrow is **aborted** with a clear error message.
 - **Check delegation allowance** — How much can the agent still borrow?
 - **Check health factor** — Is the delegator's position safe?
 - **Check outstanding debt** — How much does the delegator owe on each asset?
-- **Check available liquidity** — Is there enough in the Aave pool to borrow?
+- **Check borrowing capacity** — How much can the delegator's collateral still support?
 - **Resolve debt token addresses** — Look up VariableDebtToken for any asset
 
 ### Write Operations (needs gas in agent wallet)
@@ -213,28 +212,28 @@ fi
 
 ### Borrow + Swap via Bankr
 
+Also the shape of a periodic DCA, run on a schedule.
+
 ```bash
 # Borrow USDC from delegated credit
-aave-borrow.sh USDC 100
+./aave-borrow.sh USDC 100
 # Swap to ETH using Bankr
 bankr.sh "Swap 100 USDC for ETH on Base"
 ```
 
-### Periodic DCA
+### Gating a borrow on a health-factor headroom of your own
+
+`aave-borrow.sh` already refuses to borrow below `minHealthFactor`. Gate on a
+higher bar than that when you want a wider margin:
 
 ```bash
-# Agent borrows USDC weekly and swaps to ETH
-aave-borrow.sh USDC 100
-bankr.sh "Swap 100 USDC for ETH on Base"
-```
-
-### Safety-First Portfolio Rebalance
-
-```bash
-# Always check health first
-aave-status.sh
-# Only borrow if healthy
-aave-borrow.sh USDC 500
+HF=$(./aave-status.sh --health-only --json | jq -r .healthFactor)
+# "inf" is the no-debt sentinel and is not a number — test it separately.
+if [ "$HF" = "inf" ] || (( $(echo "$HF > 2.0" | bc -l) )); then
+  ./aave-borrow.sh USDC 500
+else
+  echo "HF $HF below the 2.0 headroom this job requires; skipping."
+fi
 ```
 
 ## Configuration Reference
@@ -269,12 +268,14 @@ aave-borrow.sh USDC 500
 
 | Error                        | Cause                                     | Fix                                              |
 |------------------------------|-------------------------------------------|--------------------------------------------------|
-| `INSUFFICIENT_ALLOWANCE`     | Delegation amount exceeded                | Delegator must call `approveDelegation()` again   |
-| `HEALTH_FACTOR_TOO_LOW`      | Borrow would risk liquidation             | Reduce amount or add collateral                   |
 | `AMOUNT_EXCEEDS_CAP`         | Per-tx safety cap hit                     | Reduce amount or update config                    |
-| `INSUFFICIENT_LIQUIDITY`     | Not enough in Aave pool                   | Try smaller amount or different asset             |
+| `CAP_UNIT_NOT_CONFIGURED`    | `maxBorrowPerTxUnit` is not in `assets`   | Add that asset, or point the unit at a configured one |
+| `INSUFFICIENT_ALLOWANCE`     | Delegation amount exceeded                | Delegator must call `approveDelegation()` again   |
+| `HEALTH_FACTOR_TOO_LOW`      | Delegator's *current* HF is already below the minimum | Add collateral or repay before borrowing |
+| `PROJECTED_HF_BELOW_MIN`     | Current HF is fine but this borrow would drop it below the minimum | Reduce amount, add collateral, or repay |
 | `INSUFFICIENT_GAS`           | Agent wallet has no native token          | Send gas to agent wallet                          |
-| `EMODE_MISMATCH`             | Asset incompatible with delegator's eMode | Borrow an asset in the same eMode category        |
+| `BORROW_REVERTED`            | The pool rejected the borrow on-chain     | Read the revert reason in the message             |
+| `BORROW_FAILED`              | The send failed before reverting          | Check RPC connectivity and the raw output         |
 
 ## Security
 
