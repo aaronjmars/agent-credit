@@ -17,6 +17,11 @@ for arg in "$@"; do
   case "$arg" in
     --health-only) HEALTH_ONLY=true ;;
     --json) JSON_OUTPUT=true ;;
+    # Without this, a typo'd flag is silently taken as the asset symbol and
+    # the caller gets human-readable text where it asked for JSON.
+    -*) echo "Unknown flag: $arg" >&2
+        echo "Usage: aave-status.sh [SYMBOL] [--health-only] [--json]" >&2
+        exit 1 ;;
     *) SYMBOL="$arg" ;;
   esac
 done
@@ -95,41 +100,73 @@ else
 fi
 
 JSON_ASSETS="[]"
+# Assets skipped because something could not be read. Reported as a non-zero
+# exit so a caller can tell a partial report from a complete one.
+RPC_ERRORS=0
 
 for SYM in $ASSETS; do
-  ASSET_ADDR=$(jq -r ".assets[\"$SYM\"].address" "$CONFIG")
-  DECIMALS=$(jq -r ".assets[\"$SYM\"].decimals" "$CONFIG")
-  
-  if [ "$ASSET_ADDR" = "null" ] || [ -z "$ASSET_ADDR" ]; then
-    echo "  ⚠ $SYM: not found in config"
+  ASSET_ADDR=$(jq -r ".assets[\"$SYM\"].address // empty" "$CONFIG")
+  DECIMALS=$(jq -r ".assets[\"$SYM\"].decimals // empty" "$CONFIG")
+
+  if [ -z "$ASSET_ADDR" ]; then
+    echo "  ⚠ $SYM: not found in config" >&2
+    RPC_ERRORS=$((RPC_ERRORS + 1))
+    continue
+  fi
+  # bc reads an empty or non-numeric scale as 0, which would divide by 10^0 and
+  # print the raw integer as though it were the human amount.
+  if ! [[ "$DECIMALS" =~ ^[0-9]+$ ]]; then
+    echo "  ⚠ $SYM: missing or non-numeric 'decimals' in config" >&2
+    RPC_ERRORS=$((RPC_ERRORS + 1))
     continue
   fi
 
-  TOKENS=$(cast call "$DATA_PROVIDER" \
-    "getReserveTokensAddresses(address)(address,address,address)" \
-    "$ASSET_ADDR" \
-    --rpc-url "$RPC_URL" 2>/dev/null || echo "")
-  
+  # Every read below reports a number an agent may act on, so a failed read
+  # must never be defaulted into one. Previously these fell back to "0": a
+  # single failed lookup cascaded into allowance/debt/balance all reading 0,
+  # and --json emitted "delegatorDebt":"0" with exit 0 — indistinguishable
+  # from a genuinely settled loan, which is what tells an agent to skip a
+  # repayment that is actually due.
+  if ! TOKENS=$(cast call "$DATA_PROVIDER" \
+      "getReserveTokensAddresses(address)(address,address,address)" \
+      "$ASSET_ADDR" \
+      --rpc-url "$RPC_URL" 2>&1); then
+    echo "  ✗ $SYM: could not resolve debt tokens — $TOKENS" >&2
+    RPC_ERRORS=$((RPC_ERRORS + 1))
+    continue
+  fi
   VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | strip_cast)
 
-  ALLOWANCE_RAW=$(cast call "$VAR_DEBT_TOKEN" \
-    "borrowAllowance(address,address)(uint256)" \
-    "$DELEGATOR" "$AGENT_ADDR" \
-    --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
+  if ! ALLOWANCE_RAW=$(cast call "$VAR_DEBT_TOKEN" \
+      "borrowAllowance(address,address)(uint256)" \
+      "$DELEGATOR" "$AGENT_ADDR" \
+      --rpc-url "$RPC_URL" 2>&1); then
+    echo "  ✗ $SYM: could not read delegation allowance — $ALLOWANCE_RAW" >&2
+    RPC_ERRORS=$((RPC_ERRORS + 1))
+    continue
+  fi
   ALLOWANCE_RAW=$(echo "$ALLOWANCE_RAW" | strip_cast)
   ALLOWANCE=$(echo "scale=$DECIMALS; $ALLOWANCE_RAW / (10^$DECIMALS)" | bc)
 
-  DEBT_RAW=$(cast call "$VAR_DEBT_TOKEN" \
-    "balanceOf(address)(uint256)" \
-    "$DELEGATOR" \
-    --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
+  if ! DEBT_RAW=$(cast call "$VAR_DEBT_TOKEN" \
+      "balanceOf(address)(uint256)" \
+      "$DELEGATOR" \
+      --rpc-url "$RPC_URL" 2>&1); then
+    echo "  ✗ $SYM: could not read delegator debt — $DEBT_RAW" >&2
+    RPC_ERRORS=$((RPC_ERRORS + 1))
+    continue
+  fi
   DEBT_RAW=$(echo "$DEBT_RAW" | strip_cast)
   DEBT=$(echo "scale=$DECIMALS; $DEBT_RAW / (10^$DECIMALS)" | bc)
 
-  AGENT_TOKEN_RAW=$(cast call "$ASSET_ADDR" \
-    "balanceOf(address)(uint256)" \
-    "$AGENT_ADDR" \
-    --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
+  if ! AGENT_TOKEN_RAW=$(cast call "$ASSET_ADDR" \
+      "balanceOf(address)(uint256)" \
+      "$AGENT_ADDR" \
+      --rpc-url "$RPC_URL" 2>&1); then
+    echo "  ✗ $SYM: could not read agent balance — $AGENT_TOKEN_RAW" >&2
+    RPC_ERRORS=$((RPC_ERRORS + 1))
+    continue
+  fi
   AGENT_TOKEN_RAW=$(echo "$AGENT_TOKEN_RAW" | strip_cast)
   AGENT_TOKEN=$(echo "scale=$DECIMALS; $AGENT_TOKEN_RAW / (10^$DECIMALS)" | bc)
 
@@ -165,4 +202,11 @@ if [ "$JSON_OUTPUT" = true ]; then
       availableBorrowsUsd: $available,
       assets: $assets
     }'
+fi
+
+# Exit non-zero on a partial report. A caller that acts on "no debt" must be
+# able to distinguish that from "could not read the debt".
+if [ "$RPC_ERRORS" -gt 0 ]; then
+  echo "✗ $RPC_ERRORS asset(s) could not be read; this report is incomplete." >&2
+  exit 1
 fi
