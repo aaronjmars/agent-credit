@@ -17,6 +17,9 @@ ok()   { echo -e "${GREEN}✓${NC} $1"; }
 warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 fail() { echo -e "${RED}✗${NC} $1"; }
 
+# Aave returns type(uint256).max as the health factor when there is no debt.
+MAX_UINT="115792089237316195423570985008687907853269984665640564039457584007913129639935"
+
 ERRORS=0
 
 echo "=== Aave Delegation Skill Setup Check ==="
@@ -210,7 +213,7 @@ if [ -n "$POOL" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ]; then
     DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / $BASE_CURRENCY_UNIT" | bc 2>/dev/null || echo "?")
     AVAILABLE_USD=$(echo "scale=2; $AVAILABLE_BORROWS / $BASE_CURRENCY_UNIT" | bc 2>/dev/null || echo "?")
     
-    if [ "$HEALTH_FACTOR_RAW" = "115792089237316195423570985008687907853269984665640564039457584007913129639935" ]; then
+    if [ "$HEALTH_FACTOR_RAW" = "$MAX_UINT" ]; then
       HF="∞ (no debt)"
     else
       HF=$(echo "scale=4; $HEALTH_FACTOR_RAW / 1000000000000000000" | bc 2>/dev/null || echo "?")

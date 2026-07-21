@@ -50,6 +50,11 @@ MIN_HF="${AAVE_MIN_HEALTH_FACTOR:-$(jq -r '.safety.minHealthFactor // "1.5"' "$C
 MAX_BORROW=$(jq -r '.safety.maxBorrowPerTx // "1000"' "$CONFIG")
 MAX_BORROW_UNIT=$(jq -r '.safety.maxBorrowPerTxUnit // "USDC"' "$CONFIG")
 
+# Gas units for the borrow tx. Safety Check 4 reserves this much gas and the
+# send below caps at it, so the two must stay equal — if the cap were higher
+# than the reservation, Check 4 could pass on a balance the tx can outspend.
+BORROW_GAS_LIMIT=500000
+
 # Resolve Aave price oracle once — used by Safety Check 1 (cross-asset cap)
 # and Safety Check 3 (projected health factor). Both checks need to convert
 # the borrow amount into the pool's base currency.
@@ -226,7 +231,7 @@ if [ -z "$GAS_PRICE" ] || [ "$GAS_PRICE" = "0" ]; then
   MIN_GAS_WEI="100000000000000"
   GAS_NOTE=" (RPC gas-price unavailable — using 0.0001 ETH floor)"
 else
-  MIN_GAS_WEI=$(echo "$GAS_PRICE * 500000" | bc)
+  MIN_GAS_WEI=$(echo "$GAS_PRICE * $BORROW_GAS_LIMIT" | bc)
   GAS_NOTE=""
 fi
 
@@ -263,7 +268,7 @@ TX_OUTPUT=$(cast send "$POOL" \
   "$DELEGATOR" \
   --private-key "$AGENT_PK" \
   --rpc-url "$RPC_URL" \
-  --gas-limit 500000 \
+  --gas-limit "$BORROW_GAS_LIMIT" \
   --json 2>&1) || TX_EXIT=$?
 
 if [ $TX_EXIT -ne 0 ]; then
