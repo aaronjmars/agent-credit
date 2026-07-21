@@ -45,14 +45,12 @@ fi
 AGENT_ADDR=$(cast wallet address "$AGENT_PK")
 MAX_UINT="115792089237316195423570985008687907853269984665640564039457584007913129639935"
 
-# Resolve variable debt token
 TOKENS=$(cast call "$DATA_PROVIDER" \
   "getReserveTokensAddresses(address)(address,address,address)" \
   "$ASSET_ADDR" \
   --rpc-url "$RPC_URL")
 VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | strip_cast)
 
-# Check current debt
 DEBT_RAW=$(cast call "$VAR_DEBT_TOKEN" \
   "balanceOf(address)(uint256)" \
   "$DELEGATOR" \
@@ -108,18 +106,15 @@ if (( $(echo "$AGENT_BALANCE_RAW < $NEEDED_RAW" | bc) )); then
 fi
 echo -e "${GREEN}✓${NC} Agent has sufficient $SYMBOL"
 
-# === Step 1: Approve Pool to spend tokens ===
 echo ""
 echo "--- Step 1: Approve Pool ---"
 
-# Check existing allowance
 EXISTING_ALLOWANCE=$(cast call "$ASSET_ADDR" \
   "allowance(address,address)(uint256)" \
   "$AGENT_ADDR" "$POOL" \
   --rpc-url "$RPC_URL")
 EXISTING_ALLOWANCE=$(echo "$EXISTING_ALLOWANCE" | strip_cast)
 
-# Determine approval amount
 if [ "$AMOUNT_RAW" = "$MAX_UINT" ]; then
   APPROVE_AMOUNT="$DEBT_RAW"
   # Add 1% buffer for accrued interest between approval and repay
@@ -153,7 +148,6 @@ else
   fi
 fi
 
-# === Step 2: Execute Repay ===
 echo ""
 echo "--- Step 2: Repay ---"
 
@@ -164,9 +158,7 @@ REPAY_AMOUNT="$AMOUNT_RAW"
 echo "  Pool.repay($ASSET_ADDR, $REPAY_AMOUNT, 2, $DELEGATOR)"
 
 # Capture without aborting on non-zero so the fallback/error path below can run
-# (under `set -e`, a top-level `var=$(cmd)` exits the script when cmd fails). The
-# exit code itself is unused — emptiness of TX_HASH drives the branch — so the
-# `|| true` just keeps `set -e` from killing the script on a failed send.
+# (under `set -e`, a top-level `var=$(cmd)` exits the script when cmd fails).
 TX_HASH=$(cast send "$POOL" \
   "repay(address,uint256,uint256,address)" \
   "$ASSET_ADDR" \
@@ -206,7 +198,6 @@ if [ -n "$TX_HASH" ]; then
     echo "  Remaining $SYMBOL debt: $NEW_DEBT"
   fi
   
-  # Check new health factor
   NEW_ACCOUNT=$(cast call "$POOL" \
     "getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)" \
     "$DELEGATOR" \

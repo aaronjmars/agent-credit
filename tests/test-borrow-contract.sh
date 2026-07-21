@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # tests/test-borrow-contract.sh
 #
-# Contract-enforcement fixtures for aave-borrow.sh covering the two gaps
-# closed in PR #5:
+# Contract-enforcement fixtures for aave-borrow.sh. The invariants under test:
 #
 #   1. Cap-bypass: borrow WETH 1 against a `1000 USDC` cap must FAIL Check 1
 #      (cross-asset cap binds via base-currency normalization).
 #   2. HF-projection: a borrow that leaves *current* HF healthy but projected
 #      HF below `minHealthFactor` must FAIL Check 3.
-#
-# Plus a positive sanity case (borrow within cap AND projected HF safe) that
-# must reach the borrow-execute branch.
+#   3. Positive control: a borrow within cap with projected HF safe must clear
+#      all four checks and reach the borrow-execute branch.
+#   4. Gas floor: a 0 gas-price must not disable Check 4; the 1e14 wei floor
+#      applies regardless.
 #
 # Approach: prepend $PATH with tests/mocks/ which contains a stub `cast` that
 # emits canned RPC responses based on env vars set per scenario. Pure bash;
@@ -147,8 +147,8 @@ echo
 
 # ---- Scenario 1: cap-bypass -------------------------------------------------
 # Cap is 1000 USDC ≈ \$1000. Request: borrow 1 WETH at \$3000 → \$3000 borrow
-# value. Pre-fix this passed silently (asset != cap unit). Post-fix it must
-# trip Check 1 with AMOUNT_EXCEEDS_CAP.
+# value. The cap binds across assets, so this must trip Check 1 with
+# AMOUNT_EXCEEDS_CAP even though the borrowed asset is not the cap unit.
 echo "[scenario 1] cap-bypass: borrow 1 WETH against 1000 USDC cap"
 reset_mocks
 export MOCK_PRICE_USDC="100000000"          # \$1.00 (8-dec base)
@@ -210,11 +210,10 @@ run_borrow USDC 100
 expect_success_reaching_execute "positive (100 USDC within cap & HF safe)" $?
 
 # ---- Scenario 4: gas-price-zero floor --------------------------------------
-# `cast gas-price` returning 0 (transient RPC issue / chain quirk) used to
-# collapse MIN_GAS_WEI to 0 and silently green-light Check 4 for any non-zero
-# balance. Post-fix: the script falls back to a 0.0001 ETH floor (1e14 wei),
-# so an agent balance of 1e10 wei (0.00000001 ETH) must trip
-# INSUFFICIENT_GAS — even though gas-price is 0.
+# A 0 gas-price (transient RPC issue / chain quirk) must not collapse
+# MIN_GAS_WEI to 0 and green-light Check 4 for any non-zero balance. The
+# script falls back to a 0.0001 ETH floor (1e14 wei), so an agent balance of
+# 1e10 wei (0.00000001 ETH) must trip INSUFFICIENT_GAS.
 echo
 echo "[scenario 4] gas-price-zero: 1e10 wei balance must fail despite gas-price=0"
 reset_mocks

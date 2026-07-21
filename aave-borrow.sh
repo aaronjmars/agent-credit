@@ -55,26 +55,15 @@ MAX_BORROW_UNIT=$(jq -r '.safety.maxBorrowPerTxUnit // "USDC"' "$CONFIG")
 # than the reservation, Check 4 could pass on a balance the tx can outspend.
 BORROW_GAS_LIMIT=500000
 
-# Resolve Aave price oracle once — used by Safety Check 1 (cross-asset cap)
-# and Safety Check 3 (projected health factor). Both checks need to convert
-# the borrow amount into the pool's base currency.
+# Resolve Aave's price oracle once — Safety Check 1 (cross-asset cap) and
+# Safety Check 3 (projected health factor) both convert the borrow amount into
+# the pool's base currency.
 #
-# === Base-currency assumption ===
-# Aave V3's price oracle returns prices in a single "base currency" with a
-# fixed number of decimals (BASE_CURRENCY_UNIT on the oracle contract).
-# Most V3 markets — including Ethereum mainnet, Polygon, Optimism, Arbitrum,
-# and Base — use **USD with 8 decimals** (BASE_CURRENCY_UNIT = 1e8). Some
-# deployments (notably the original Aave V2 ETH market and a handful of L2
-# variants) instead denominate in **ETH with 18 decimals**. If you're
-# pointing this script at such a market, override via:
-#
-#   export AAVE_BASE_CURRENCY_DECIMALS=18
-#
-# This only affects the `~$X` *display* values printed to the user; the
-# safety comparisons (cap, HF projection) are done in base-currency units on
-# both sides of every inequality, so they remain correct regardless of the
-# chosen decimals. To verify the right value for a market, query the
-# oracle's BASE_CURRENCY_UNIT() getter and confirm it equals 10^DECIMALS.
+# That base currency is USD/8-decimals on every market this skill targets;
+# some deployments (the original V2 ETH market, a few L2 variants) use ETH/18,
+# for which you override AAVE_BASE_CURRENCY_DECIMALS=18. Only the `~$X`
+# display values depend on getting this right — both sides of every safety
+# inequality are in base-currency units, so the checks hold either way.
 BASE_CURRENCY_DECIMALS="${AAVE_BASE_CURRENCY_DECIMALS:-8}"
 BASE_CURRENCY_UNIT=$(echo "10^$BASE_CURRENCY_DECIMALS" | bc)
 
@@ -84,7 +73,6 @@ ORACLE=$(cast call "$ADDRESSES_PROVIDER" "getPriceOracle()(address)" \
   --rpc-url "$RPC_URL" | strip_cast)
 ASSET_PRICE=$(cast call "$ORACLE" "getAssetPrice(address)(uint256)" \
   "$ASSET_ADDR" --rpc-url "$RPC_URL" | strip_cast)
-# Borrow value in base currency (Aave V3 returns USD with 8 decimals on most chains; see note above)
 BORROW_BASE=$(echo "$AMOUNT_RAW * $ASSET_PRICE / (10^$DECIMALS)" | bc)
 BORROW_USD=$(echo "scale=2; $BORROW_BASE / $BASE_CURRENCY_UNIT" | bc)
 
@@ -122,7 +110,6 @@ echo -e "${GREEN}✓${NC} Amount within per-tx cap (~\$$BORROW_USD ≤ ~\$$CAP_U
 # === SAFETY CHECK 2: Delegation allowance ===
 echo "--- Safety Check 2: Delegation Allowance ---"
 
-# Resolve variable debt token
 TOKENS=$(cast call "$DATA_PROVIDER" \
   "getReserveTokensAddresses(address)(address,address,address)" \
   "$ASSET_ADDR" \
@@ -179,14 +166,12 @@ echo "  Current HF:     $HF_DISPLAY"
 echo "  Collateral:     \$$COLLATERAL_USD"
 echo "  Existing debt:  \$$DEBT_USD"
 
-# Check current HF is above minimum
 if (( $(echo "$HF < $MIN_HF" | bc -l) )) && [ "$HF" != "999" ]; then
   echo -e "${RED}✗ HEALTH_FACTOR_TOO_LOW: Current HF ($HF) is already below minimum ($MIN_HF)${NC}"
   echo "  Delegator should add collateral or repay debt before agent borrows more."
   exit 1
 fi
 
-# Check available borrows
 if [ "$AVAILABLE_BORROWS" = "0" ]; then
   echo -e "${RED}✗ No available borrowing capacity for delegator${NC}"
   exit 1
@@ -224,9 +209,8 @@ GAS_PRICE=$(cast gas-price --rpc-url "$RPC_URL" 2>/dev/null || echo "")
 # chain that doesn't expose eth_gasPrice the way cast expects), fall back to
 # a conservative floor instead of multiplying through with 0. Otherwise
 # MIN_GAS_WEI collapses to 0 and the `$AGENT_BALANCE < 0` comparison below
-# silently green-lights any non-zero balance — exactly the kind of safety
-# contract drift this skill is meant to catch. 1e14 wei = 0.0001 ETH covers
-# a 500k-gas borrow at ~200 gwei on every EVM chain Aave is deployed on.
+# silently green-lights any non-zero balance. 1e14 wei = 0.0001 ETH covers a
+# 500k-gas borrow at ~200 gwei on every EVM chain Aave is deployed on.
 if [ -z "$GAS_PRICE" ] || [ "$GAS_PRICE" = "0" ]; then
   MIN_GAS_WEI="100000000000000"
   GAS_NOTE=" (RPC gas-price unavailable — using 0.0001 ETH floor)"
@@ -304,7 +288,6 @@ if [ -n "$TX_HASH" ]; then
   echo "  Tokens sent to: $AGENT_ADDR"
   echo "  Debt charged to: $DELEGATOR"
   
-  # Verify new balance
   NEW_BALANCE_RAW=$(cast call "$ASSET_ADDR" \
     "balanceOf(address)(uint256)" \
     "$AGENT_ADDR" \
@@ -315,7 +298,6 @@ if [ -n "$TX_HASH" ]; then
     echo "  Agent $SYMBOL balance: $NEW_BALANCE"
   fi
   
-  # Check new health factor
   NEW_ACCOUNT=$(cast call "$POOL" \
     "getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)" \
     "$DELEGATOR" \

@@ -31,7 +31,6 @@ CONFIG_PATH="${CONFIG:-$HOME/.openclaw/skills/aave-delegation/config.json}"
 # Resolve symbol from a 0x-address by scanning config.assets
 addr_to_symbol() {
   local target="$1"
-  # Lowercase compare to be safe
   local lower
   lower=$(printf '%s' "$target" | tr '[:upper:]' '[:lower:]')
   jq -r --arg a "$lower" '

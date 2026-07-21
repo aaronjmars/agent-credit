@@ -90,12 +90,8 @@ else
   ok "DataProvider address: $DATA_PROVIDER"
 fi
 
-# Aave V3's price oracle denominates everything in a single "base currency"
-# with a fixed number of decimals. USD/8 covers Ethereum, Polygon, Arbitrum,
-# Optimism, and Base; a handful of V2/L2 variants use ETH/18. aave-borrow.sh
-# respects AAVE_BASE_CURRENCY_DECIMALS — match it here so this setup check
-# doesn't print collateral/debt figures off by 1e10 against ETH-denominated
-# markets.
+# Must match aave-borrow.sh, or this check prints collateral/debt figures off
+# by 1e10 against ETH-denominated markets. See the note there.
 BASE_CURRENCY_DECIMALS="${AAVE_BASE_CURRENCY_DECIMALS:-8}"
 BASE_CURRENCY_UNIT=$(echo "10^$BASE_CURRENCY_DECIMALS" | bc)
 
@@ -136,7 +132,6 @@ fi
 echo ""
 echo "--- Aave Pool ---"
 if [ -n "$POOL" ] && [ -n "$RPC_URL" ]; then
-  # Check if pool is a contract
   CODE=$(cast code "$POOL" --rpc-url "$RPC_URL" 2>/dev/null || echo "0x")
   if [ "$CODE" = "0x" ] || [ -z "$CODE" ]; then
     fail "Pool address $POOL has no code — wrong address or wrong chain?"
@@ -152,12 +147,10 @@ echo "--- Delegation Status ---"
 if [ -n "$AGENT_PK" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ] && [ -n "$DATA_PROVIDER" ]; then
   AGENT_ADDR=$(cast wallet address "$AGENT_PK" 2>/dev/null)
   
-  # Iterate configured assets
   for SYMBOL in $(jq -r '.assets | keys[]' "$CONFIG" 2>/dev/null); do
     ASSET_ADDR=$(jq -r ".assets[\"$SYMBOL\"].address" "$CONFIG")
     DECIMALS=$(jq -r ".assets[\"$SYMBOL\"].decimals" "$CONFIG")
     
-    # Get debt token addresses
     TOKENS=$(cast call "$DATA_PROVIDER" \
       "getReserveTokensAddresses(address)(address,address,address)" \
       "$ASSET_ADDR" \
@@ -176,7 +169,6 @@ if [ -n "$AGENT_PK" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ] && [ -n "$DATA
       continue
     fi
     
-    # Check allowance
     ALLOWANCE_RAW=$(cast call "$VAR_DEBT_TOKEN" \
       "borrowAllowance(address,address)(uint256)" \
       "$DELEGATOR" "$AGENT_ADDR" \
@@ -228,7 +220,6 @@ if [ -n "$POOL" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ]; then
   fi
 fi
 
-# Summary
 echo ""
 echo "=== Summary ==="
 if [ "$ERRORS" -eq 0 ]; then

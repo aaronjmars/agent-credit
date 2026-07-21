@@ -29,11 +29,8 @@ POOL="${AAVE_POOL_ADDRESS:-$(jq -r '.poolAddress' "$CONFIG")}"
 DATA_PROVIDER=$(jq -r '.dataProviderAddress' "$CONFIG")
 AGENT_ADDR=$(cast wallet address "$AGENT_PK")
 
-# Aave V3's price oracle denominates everything in a single "base currency"
-# with a fixed number of decimals. USD/8 is the default across Ethereum,
-# Polygon, Arbitrum, Optimism, and Base; ETH/18 is used by a handful of V2/L2
-# variants. aave-borrow.sh respects AAVE_BASE_CURRENCY_DECIMALS — match it
-# here so the displayed USD figures don't silently diverge across scripts.
+# Must match aave-borrow.sh, or the USD figures diverge across scripts for the
+# same on-chain state. See the note there.
 BASE_CURRENCY_DECIMALS="${AAVE_BASE_CURRENCY_DECIMALS:-8}"
 BASE_CURRENCY_UNIT=$(echo "10^$BASE_CURRENCY_DECIMALS" | bc)
 
@@ -108,7 +105,6 @@ for SYM in $ASSETS; do
     continue
   fi
 
-  # Get debt token addresses
   TOKENS=$(cast call "$DATA_PROVIDER" \
     "getReserveTokensAddresses(address)(address,address,address)" \
     "$ASSET_ADDR" \
@@ -116,7 +112,6 @@ for SYM in $ASSETS; do
   
   VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | strip_cast)
 
-  # Delegation allowance
   ALLOWANCE_RAW=$(cast call "$VAR_DEBT_TOKEN" \
     "borrowAllowance(address,address)(uint256)" \
     "$DELEGATOR" "$AGENT_ADDR" \
@@ -124,7 +119,6 @@ for SYM in $ASSETS; do
   ALLOWANCE_RAW=$(echo "$ALLOWANCE_RAW" | strip_cast)
   ALLOWANCE=$(echo "scale=$DECIMALS; $ALLOWANCE_RAW / (10^$DECIMALS)" | bc)
 
-  # Current debt on this asset
   DEBT_RAW=$(cast call "$VAR_DEBT_TOKEN" \
     "balanceOf(address)(uint256)" \
     "$DELEGATOR" \
@@ -132,7 +126,6 @@ for SYM in $ASSETS; do
   DEBT_RAW=$(echo "$DEBT_RAW" | strip_cast)
   DEBT=$(echo "scale=$DECIMALS; $DEBT_RAW / (10^$DECIMALS)" | bc)
 
-  # Agent's token balance
   AGENT_TOKEN_RAW=$(cast call "$ASSET_ADDR" \
     "balanceOf(address)(uint256)" \
     "$AGENT_ADDR" \
