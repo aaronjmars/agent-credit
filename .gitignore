@@ -1,0 +1,4 @@
+# Holds agentPrivateKey. CONTRIBUTING.md tells contributors to create this in
+# the repo root, so it must never be committable. config.example.json stays
+# tracked and is not matched by this pattern.
+config.json

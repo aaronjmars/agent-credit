@@ -1,6 +1,6 @@
 # Aave Deployments Reference
 
-All addresses verified on-chain. The credit delegation functions (`approveDelegation`, `borrowAllowance`, `borrow`, `repay`) use identical signatures on both V2 and V3.
+Cross-check against [aave-address-book](https://github.com/bgd-labs/aave-address-book) before use. The credit delegation functions (`approveDelegation`, `borrowAllowance`, `borrow`, `repay`) use identical signatures on both V2 and V3 — but `aave-borrow.sh` is V3-only for an unrelated reason (oracle resolution); see [contracts.md](contracts.md).
 
 > **To look up any debt token dynamically:**
 > ```bash

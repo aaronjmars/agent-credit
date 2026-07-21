@@ -3,11 +3,8 @@
 # Usage: aave-status.sh [SYMBOL] [--health-only] [--json]
 set -euo pipefail
 
-# Strip cast's bracket annotations e.g. "7920000000000000 [7.92e15]" → "7920000000000000"
-strip_cast() { sed 's/ *\[.*\]//' | tr -d ' '; }
-
-SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/skills/aave-delegation}"
-CONFIG="$SKILL_DIR/config.json"
+# shellcheck source=./lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # Parse args
 SYMBOL=""
@@ -17,25 +14,19 @@ for arg in "$@"; do
   case "$arg" in
     --health-only) HEALTH_ONLY=true ;;
     --json) JSON_OUTPUT=true ;;
+    # Without this, a typo'd flag is silently taken as the asset symbol and
+    # the caller gets human-readable text where it asked for JSON.
+    -*) echo "Unknown flag: $arg" >&2
+        echo "Usage: aave-status.sh [SYMBOL] [--health-only] [--json]" >&2
+        exit 1 ;;
     *) SYMBOL="$arg" ;;
   esac
 done
 
 # Load config
-RPC_URL="${AAVE_RPC_URL:-$(jq -r '.rpcUrl' "$CONFIG")}"
-AGENT_PK="${AAVE_AGENT_PRIVATE_KEY:-$(jq -r '.agentPrivateKey' "$CONFIG")}"
-DELEGATOR="${AAVE_DELEGATOR_ADDRESS:-$(jq -r '.delegatorAddress' "$CONFIG")}"
-POOL="${AAVE_POOL_ADDRESS:-$(jq -r '.poolAddress' "$CONFIG")}"
-DATA_PROVIDER=$(jq -r '.dataProviderAddress' "$CONFIG")
+load_config
 AGENT_ADDR=$(cast wallet address "$AGENT_PK")
-
-# Aave V3's price oracle denominates everything in a single "base currency"
-# with a fixed number of decimals. USD/8 is the default across Ethereum,
-# Polygon, Arbitrum, Optimism, and Base; ETH/18 is used by a handful of V2/L2
-# variants. aave-borrow.sh respects AAVE_BASE_CURRENCY_DECIMALS — match it
-# here so the displayed USD figures don't silently diverge across scripts.
-BASE_CURRENCY_DECIMALS="${AAVE_BASE_CURRENCY_DECIMALS:-8}"
-BASE_CURRENCY_UNIT=$(echo "10^$BASE_CURRENCY_DECIMALS" | bc)
+init_base_currency
 
 # === Health Factor ===
 ACCOUNT_DATA=$(cast call "$POOL" \
@@ -48,16 +39,15 @@ TOTAL_DEBT=$(echo "$ACCOUNT_DATA" | sed -n '2p' | strip_cast)
 AVAILABLE_BORROWS=$(echo "$ACCOUNT_DATA" | sed -n '3p' | strip_cast)
 HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | strip_cast)
 
-COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / $BASE_CURRENCY_UNIT" | bc)
-DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / $BASE_CURRENCY_UNIT" | bc)
-AVAILABLE_USD=$(echo "scale=2; $AVAILABLE_BORROWS / $BASE_CURRENCY_UNIT" | bc)
+COLLATERAL_USD=$(to_usd "$TOTAL_COLLATERAL")
+DEBT_USD=$(to_usd "$TOTAL_DEBT")
+AVAILABLE_USD=$(to_usd "$AVAILABLE_BORROWS")
 
-MAX_UINT="115792089237316195423570985008687907853269984665640564039457584007913129639935"
 if [ "$HEALTH_FACTOR_RAW" = "$MAX_UINT" ]; then
   HF="inf"
   HF_DISPLAY="∞ (no debt)"
 else
-  HF=$(echo "scale=4; $HEALTH_FACTOR_RAW / 1000000000000000000" | bc)
+  HF=$(hf_from_raw "$HEALTH_FACTOR_RAW")
   HF_DISPLAY="$HF"
 fi
 
@@ -98,47 +88,75 @@ else
 fi
 
 JSON_ASSETS="[]"
+# Assets skipped because something could not be read. Reported as a non-zero
+# exit so a caller can tell a partial report from a complete one.
+RPC_ERRORS=0
 
 for SYM in $ASSETS; do
-  ASSET_ADDR=$(jq -r ".assets[\"$SYM\"].address" "$CONFIG")
-  DECIMALS=$(jq -r ".assets[\"$SYM\"].decimals" "$CONFIG")
-  
-  if [ "$ASSET_ADDR" = "null" ] || [ -z "$ASSET_ADDR" ]; then
-    echo "  ⚠ $SYM: not found in config"
+  ASSET_ADDR=$(jq -r ".assets[\"$SYM\"].address // empty" "$CONFIG")
+  DECIMALS=$(jq -r ".assets[\"$SYM\"].decimals // empty" "$CONFIG")
+
+  if [ -z "$ASSET_ADDR" ]; then
+    echo "  ⚠ $SYM: not found in config" >&2
+    RPC_ERRORS=$((RPC_ERRORS + 1))
+    continue
+  fi
+  # bc reads an empty or non-numeric scale as 0, which would divide by 10^0 and
+  # print the raw integer as though it were the human amount.
+  if ! [[ "$DECIMALS" =~ ^[0-9]+$ ]]; then
+    echo "  ⚠ $SYM: missing or non-numeric 'decimals' in config" >&2
+    RPC_ERRORS=$((RPC_ERRORS + 1))
     continue
   fi
 
-  # Get debt token addresses
-  TOKENS=$(cast call "$DATA_PROVIDER" \
-    "getReserveTokensAddresses(address)(address,address,address)" \
-    "$ASSET_ADDR" \
-    --rpc-url "$RPC_URL" 2>/dev/null || echo "")
-  
+  # Every read below reports a number an agent may act on, so a failed read
+  # must never be defaulted into one. Previously these fell back to "0": a
+  # single failed lookup cascaded into allowance/debt/balance all reading 0,
+  # and --json emitted "delegatorDebt":"0" with exit 0 — indistinguishable
+  # from a genuinely settled loan, which is what tells an agent to skip a
+  # repayment that is actually due.
+  if ! TOKENS=$(cast call "$DATA_PROVIDER" \
+      "getReserveTokensAddresses(address)(address,address,address)" \
+      "$ASSET_ADDR" \
+      --rpc-url "$RPC_URL" 2>&1); then
+    echo "  ✗ $SYM: could not resolve debt tokens — $TOKENS" >&2
+    RPC_ERRORS=$((RPC_ERRORS + 1))
+    continue
+  fi
   VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | strip_cast)
 
-  # Delegation allowance
-  ALLOWANCE_RAW=$(cast call "$VAR_DEBT_TOKEN" \
-    "borrowAllowance(address,address)(uint256)" \
-    "$DELEGATOR" "$AGENT_ADDR" \
-    --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
+  if ! ALLOWANCE_RAW=$(cast call "$VAR_DEBT_TOKEN" \
+      "borrowAllowance(address,address)(uint256)" \
+      "$DELEGATOR" "$AGENT_ADDR" \
+      --rpc-url "$RPC_URL" 2>&1); then
+    echo "  ✗ $SYM: could not read delegation allowance — $ALLOWANCE_RAW" >&2
+    RPC_ERRORS=$((RPC_ERRORS + 1))
+    continue
+  fi
   ALLOWANCE_RAW=$(echo "$ALLOWANCE_RAW" | strip_cast)
-  ALLOWANCE=$(echo "scale=$DECIMALS; $ALLOWANCE_RAW / (10^$DECIMALS)" | bc)
+  ALLOWANCE=$(from_units "$ALLOWANCE_RAW" "$DECIMALS")
 
-  # Current debt on this asset
-  DEBT_RAW=$(cast call "$VAR_DEBT_TOKEN" \
-    "balanceOf(address)(uint256)" \
-    "$DELEGATOR" \
-    --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
+  if ! DEBT_RAW=$(cast call "$VAR_DEBT_TOKEN" \
+      "balanceOf(address)(uint256)" \
+      "$DELEGATOR" \
+      --rpc-url "$RPC_URL" 2>&1); then
+    echo "  ✗ $SYM: could not read delegator debt — $DEBT_RAW" >&2
+    RPC_ERRORS=$((RPC_ERRORS + 1))
+    continue
+  fi
   DEBT_RAW=$(echo "$DEBT_RAW" | strip_cast)
-  DEBT=$(echo "scale=$DECIMALS; $DEBT_RAW / (10^$DECIMALS)" | bc)
+  DEBT=$(from_units "$DEBT_RAW" "$DECIMALS")
 
-  # Agent's token balance
-  AGENT_TOKEN_RAW=$(cast call "$ASSET_ADDR" \
-    "balanceOf(address)(uint256)" \
-    "$AGENT_ADDR" \
-    --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
+  if ! AGENT_TOKEN_RAW=$(cast call "$ASSET_ADDR" \
+      "balanceOf(address)(uint256)" \
+      "$AGENT_ADDR" \
+      --rpc-url "$RPC_URL" 2>&1); then
+    echo "  ✗ $SYM: could not read agent balance — $AGENT_TOKEN_RAW" >&2
+    RPC_ERRORS=$((RPC_ERRORS + 1))
+    continue
+  fi
   AGENT_TOKEN_RAW=$(echo "$AGENT_TOKEN_RAW" | strip_cast)
-  AGENT_TOKEN=$(echo "scale=$DECIMALS; $AGENT_TOKEN_RAW / (10^$DECIMALS)" | bc)
+  AGENT_TOKEN=$(from_units "$AGENT_TOKEN_RAW" "$DECIMALS")
 
   if [ "$JSON_OUTPUT" = true ]; then
     JSON_ASSETS=$(echo "$JSON_ASSETS" | jq --arg sym "$SYM" --arg allow "$ALLOWANCE" \
@@ -172,4 +190,11 @@ if [ "$JSON_OUTPUT" = true ]; then
       availableBorrowsUsd: $available,
       assets: $assets
     }'
+fi
+
+# Exit non-zero on a partial report. A caller that acts on "no debt" must be
+# able to distinguish that from "could not read the debt".
+if [ "$RPC_ERRORS" -gt 0 ]; then
+  echo "✗ $RPC_ERRORS asset(s) could not be read; this report is incomplete." >&2
+  exit 1
 fi

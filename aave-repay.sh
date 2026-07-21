@@ -5,16 +5,8 @@
 #          aave-repay.sh USDC max
 set -euo pipefail
 
-# Strip cast's bracket annotations e.g. "7920000000000000 [7.92e15]" → "7920000000000000"
-strip_cast() { sed 's/ *\[.*\]//' | tr -d ' '; }
-
-SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/skills/aave-delegation}"
-CONFIG="$SKILL_DIR/config.json"
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# shellcheck source=./lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # === Parse arguments ===
 if [ $# -lt 2 ]; then
@@ -27,38 +19,21 @@ SYMBOL="$1"
 AMOUNT="$2"
 
 # === Load config ===
-RPC_URL="${AAVE_RPC_URL:-$(jq -r '.rpcUrl' "$CONFIG")}"
-AGENT_PK="${AAVE_AGENT_PRIVATE_KEY:-$(jq -r '.agentPrivateKey' "$CONFIG")}"
-DELEGATOR="${AAVE_DELEGATOR_ADDRESS:-$(jq -r '.delegatorAddress' "$CONFIG")}"
-POOL="${AAVE_POOL_ADDRESS:-$(jq -r '.poolAddress' "$CONFIG")}"
-DATA_PROVIDER=$(jq -r '.dataProviderAddress' "$CONFIG")
-CHAIN=$(jq -r '.chain // "unknown"' "$CONFIG")
+load_config
+resolve_asset "$SYMBOL"
 
-ASSET_ADDR=$(jq -r ".assets[\"$SYMBOL\"].address // empty" "$CONFIG")
-DECIMALS=$(jq -r ".assets[\"$SYMBOL\"].decimals // empty" "$CONFIG")
+AGENT_ADDR=$(cast wallet address "$AGENT_PK")
 
-if [ -z "$ASSET_ADDR" ] || [ -z "$DECIMALS" ]; then
-  echo -e "${RED}✗ Asset $SYMBOL not found in config${NC}"
+if ! VAR_DEBT_TOKEN=$(resolve_var_debt_token "$ASSET_ADDR"); then
   exit 1
 fi
 
-AGENT_ADDR=$(cast wallet address "$AGENT_PK")
-MAX_UINT="115792089237316195423570985008687907853269984665640564039457584007913129639935"
-
-# Resolve variable debt token
-TOKENS=$(cast call "$DATA_PROVIDER" \
-  "getReserveTokensAddresses(address)(address,address,address)" \
-  "$ASSET_ADDR" \
-  --rpc-url "$RPC_URL")
-VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | strip_cast)
-
-# Check current debt
 DEBT_RAW=$(cast call "$VAR_DEBT_TOKEN" \
   "balanceOf(address)(uint256)" \
   "$DELEGATOR" \
   --rpc-url "$RPC_URL")
 DEBT_RAW=$(echo "$DEBT_RAW" | strip_cast)
-DEBT=$(echo "scale=$DECIMALS; $DEBT_RAW / (10^$DECIMALS)" | bc)
+DEBT=$(from_units "$DEBT_RAW" "$DECIMALS")
 
 echo "=== Aave V3 Debt Repayment ==="
 echo "  Chain:      $CHAIN"
@@ -73,14 +48,19 @@ if [ "$DEBT_RAW" = "0" ]; then
   exit 0
 fi
 
-# Handle "max" repayment
+# One flag answers "is this a max repay?" everywhere below. It was previously
+# asked three different ways — including by string-comparing the human amount
+# against a bc-formatted debt figure.
 if [ "$AMOUNT" = "max" ]; then
-  # For max repay, use type(uint256).max which tells Aave to repay the full debt
+  IS_MAX_REPAY=true
+  # type(uint256).max tells Aave to settle the exact debt at execution time
+  # rather than a figure quoted a few seconds earlier.
   AMOUNT_RAW="$MAX_UINT"
   AMOUNT="$DEBT"
   echo "  Repaying: MAX (full debt = $DEBT $SYMBOL)"
 else
-  AMOUNT_RAW=$(echo "$AMOUNT * (10^$DECIMALS)" | bc | cut -d'.' -f1)
+  IS_MAX_REPAY=false
+  AMOUNT_RAW=$(to_units "$AMOUNT" "$DECIMALS")
   echo "  Repaying: $AMOUNT $SYMBOL ($AMOUNT_RAW raw)"
 fi
 
@@ -90,13 +70,13 @@ AGENT_BALANCE_RAW=$(cast call "$ASSET_ADDR" \
   "$AGENT_ADDR" \
   --rpc-url "$RPC_URL")
 AGENT_BALANCE_RAW=$(echo "$AGENT_BALANCE_RAW" | strip_cast)
-AGENT_BALANCE=$(echo "scale=$DECIMALS; $AGENT_BALANCE_RAW / (10^$DECIMALS)" | bc)
+AGENT_BALANCE=$(from_units "$AGENT_BALANCE_RAW" "$DECIMALS")
 
 echo "  Agent $SYMBOL balance: $AGENT_BALANCE"
 
-# For max repay, we need at least the debt amount
-NEEDED_RAW="$DEBT_RAW"
-if [ "$AMOUNT" != "$DEBT" ]; then
+if [ "$IS_MAX_REPAY" = true ]; then
+  NEEDED_RAW="$DEBT_RAW"
+else
   NEEDED_RAW="$AMOUNT_RAW"
 fi
 
@@ -108,22 +88,31 @@ if (( $(echo "$AGENT_BALANCE_RAW < $NEEDED_RAW" | bc) )); then
 fi
 echo -e "${GREEN}✓${NC} Agent has sufficient $SYMBOL"
 
-# === Step 1: Approve Pool to spend tokens ===
+# The debt keeps accruing between this read and execution, and Aave pulls the
+# amount owed at execution time. A balance that only just covers the figure
+# read above can therefore still revert in transferFrom. Warn rather than
+# block: the shortfall is usually far smaller than the 1% approval buffer.
+if [ "$IS_MAX_REPAY" = true ]; then
+  BUFFERED_RAW=$(echo "$DEBT_RAW * 101 / 100" | bc)
+  if (( $(echo "$AGENT_BALANCE_RAW < $BUFFERED_RAW" | bc) )); then
+    echo -e "${YELLOW}⚠${NC} Balance covers the debt read just now but leaves under 1% headroom."
+    echo "  If interest accrues before this lands, the repay may revert. Consider"
+    echo "  repaying a fixed amount slightly below your balance instead of 'max'."
+  fi
+fi
+
 echo ""
 echo "--- Step 1: Approve Pool ---"
 
-# Check existing allowance
 EXISTING_ALLOWANCE=$(cast call "$ASSET_ADDR" \
   "allowance(address,address)(uint256)" \
   "$AGENT_ADDR" "$POOL" \
   --rpc-url "$RPC_URL")
 EXISTING_ALLOWANCE=$(echo "$EXISTING_ALLOWANCE" | strip_cast)
 
-# Determine approval amount
-if [ "$AMOUNT_RAW" = "$MAX_UINT" ]; then
-  APPROVE_AMOUNT="$DEBT_RAW"
-  # Add 1% buffer for accrued interest between approval and repay
-  APPROVE_AMOUNT=$(echo "$APPROVE_AMOUNT * 101 / 100" | bc)
+if [ "$IS_MAX_REPAY" = true ]; then
+  # 1% buffer for interest accruing between approval and repay.
+  APPROVE_AMOUNT="$BUFFERED_RAW"
 else
   APPROVE_AMOUNT="$AMOUNT_RAW"
 fi
@@ -132,45 +121,50 @@ if (( $(echo "$EXISTING_ALLOWANCE >= $APPROVE_AMOUNT" | bc) )); then
   echo -e "${GREEN}✓${NC} Pool already has sufficient allowance"
 else
   echo "  Approving Pool to spend $SYMBOL..."
-  APPROVE_TX=$(cast send "$ASSET_ADDR" \
+  # Capture the exit code rather than the parsed hash. The previous shape
+  # discarded stderr and re-sent the approve whenever the hash came back
+  # empty — including when the first send had actually succeeded and only the
+  # JSON parse failed, which spends gas on a redundant approval.
+  APPROVE_EXIT=0
+  APPROVE_OUT=$(cast send "$ASSET_ADDR" \
     "approve(address,uint256)" \
     "$POOL" \
     "$APPROVE_AMOUNT" \
     --private-key "$AGENT_PK" \
     --rpc-url "$RPC_URL" \
-    --json 2>/dev/null | jq -r '.transactionHash // .hash // empty' || echo "")
-  
-  if [ -z "$APPROVE_TX" ]; then
-    # Fallback without --json
-    cast send "$ASSET_ADDR" \
-      "approve(address,uint256)" \
-      "$POOL" \
-      "$APPROVE_AMOUNT" \
-      --private-key "$AGENT_PK" \
-      --rpc-url "$RPC_URL"
-  else
+    --json 2>&1) || APPROVE_EXIT=$?
+
+  if [ $APPROVE_EXIT -ne 0 ]; then
+    echo -e "${RED}✗ APPROVE_FAILED: $APPROVE_OUT${NC}"
+    exit 1
+  fi
+
+  APPROVE_TX=$(printf '%s' "$APPROVE_OUT" | jq -r '.transactionHash // .hash // empty' 2>/dev/null || echo "")
+  if [ -n "$APPROVE_TX" ]; then
     echo -e "${GREEN}✓${NC} Approved. TX: $APPROVE_TX"
+  else
+    echo -e "${GREEN}✓${NC} Approved (receipt not parseable, but the send succeeded)"
   fi
 fi
 
-# === Step 2: Execute Repay ===
 echo ""
 echo "--- Step 2: Repay ---"
 
-# For max repay, pass type(uint256).max so Aave repays exact debt amount
-if [ "$AMOUNT_RAW" = "$MAX_UINT" ]; then
-  REPAY_AMOUNT="$MAX_UINT"
-else
-  REPAY_AMOUNT="$AMOUNT_RAW"
-fi
+# On a max repay AMOUNT_RAW is type(uint256).max, which tells Aave to settle
+# the exact debt at execution time rather than a stale quoted amount.
+REPAY_AMOUNT="$AMOUNT_RAW"
 
 echo "  Pool.repay($ASSET_ADDR, $REPAY_AMOUNT, 2, $DELEGATOR)"
 
-# Capture without aborting on non-zero so the fallback/error path below can run
-# (under `set -e`, a top-level `var=$(cmd)` exits the script when cmd fails). The
-# exit code itself is unused — emptiness of TX_HASH drives the branch — so the
-# `|| true` just keeps `set -e` from killing the script on a failed send.
-TX_HASH=$(cast send "$POOL" \
+# Capture the exit code without aborting, so the error path below can run
+# (under `set -e`, a top-level `var=$(cmd)` exits the script when cmd fails).
+#
+# A repay is NOT idempotent: it pulls the agent's tokens each time. The
+# previous shape re-sent this transaction whenever no hash could be parsed,
+# which includes the case where the first send landed on-chain and only the
+# response failed to parse. There is no retry here for that reason.
+TX_EXIT=0
+TX_OUTPUT=$(cast send "$POOL" \
   "repay(address,uint256,uint256,address)" \
   "$ASSET_ADDR" \
   "$REPAY_AMOUNT" \
@@ -178,19 +172,35 @@ TX_HASH=$(cast send "$POOL" \
   "$DELEGATOR" \
   --private-key "$AGENT_PK" \
   --rpc-url "$RPC_URL" \
-  --json 2>/dev/null | jq -r '.transactionHash // .hash // empty') || true
+  --json 2>&1) || TX_EXIT=$?
 
-if [ -z "$TX_HASH" ]; then
-  TX_OUTPUT=$(cast send "$POOL" \
-    "repay(address,uint256,uint256,address)" \
-    "$ASSET_ADDR" \
-    "$REPAY_AMOUNT" \
-    2 \
-    "$DELEGATOR" \
-    --private-key "$AGENT_PK" \
-    --rpc-url "$RPC_URL" 2>&1) || true
-  echo "$TX_OUTPUT"
-  TX_HASH=$(echo "$TX_OUTPUT" | grep -oE '0x[a-fA-F0-9]{64}' | head -1 || echo "")
+if [ $TX_EXIT -ne 0 ]; then
+  echo -e "${RED}✗ REPAY_FAILED: $TX_OUTPUT${NC}"
+  echo "  The transaction may or may not have been broadcast. Check the"
+  echo "  delegator's debt with ./aave-status.sh $SYMBOL before retrying."
+  exit 1
+fi
+
+if ! TX_HASH=$(printf '%s' "$TX_OUTPUT" | jq -r '.transactionHash // .hash // empty' 2>/dev/null); then
+  echo -e "${RED}✗ REPAY_SENT_BUT_UNPARSEABLE: the repay was submitted successfully"
+  echo -e "  but its receipt could not be parsed. DO NOT RETRY.${NC}"
+  echo "  Raw output: $TX_OUTPUT"
+  echo "  Verify with: ./aave-status.sh $SYMBOL"
+  exit 1
+fi
+
+# Only an explicit failure status counts as a revert; cast versions that omit
+# the field leave this empty and fall through. Previously a reverted receipt
+# was reported as success, because the hash was scraped with a bare grep that
+# matched blockHash (which Foundry prints first) and a reverted receipt still
+# contains one.
+TX_STATUS=$(printf '%s' "$TX_OUTPUT" | jq -r '.status // empty' 2>/dev/null || echo "")
+if [ "$TX_STATUS" = "0x0" ] || [ "$TX_STATUS" = "0" ]; then
+  echo -e "${RED}✗ REPAY_REVERTED: transaction $TX_HASH was mined but reverted${NC}"
+  echo "  The debt was NOT repaid. Gas was still spent."
+  echo "  A max repay can revert if accrued interest exceeded the 1% approval"
+  echo "  buffer; re-running will re-quote the debt."
+  exit 1
 fi
 
 if [ -n "$TX_HASH" ]; then
@@ -205,11 +215,10 @@ if [ -n "$TX_HASH" ]; then
     --rpc-url "$RPC_URL" 2>/dev/null || echo "?")
   NEW_DEBT_RAW=$(echo "$NEW_DEBT_RAW" | strip_cast)
   if [ "$NEW_DEBT_RAW" != "?" ]; then
-    NEW_DEBT=$(echo "scale=$DECIMALS; $NEW_DEBT_RAW / (10^$DECIMALS)" | bc)
+    NEW_DEBT=$(from_units "$NEW_DEBT_RAW" "$DECIMALS")
     echo "  Remaining $SYMBOL debt: $NEW_DEBT"
   fi
   
-  # Check new health factor
   NEW_ACCOUNT=$(cast call "$POOL" \
     "getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)" \
     "$DELEGATOR" \
@@ -219,7 +228,7 @@ if [ -n "$TX_HASH" ]; then
     if [ "$NEW_HF_RAW" = "$MAX_UINT" ]; then
       echo "  Health factor: ∞ (all debt repaid)"
     else
-      NEW_HF=$(echo "scale=4; $NEW_HF_RAW / 1000000000000000000" | bc)
+      NEW_HF=$(hf_from_raw "$NEW_HF_RAW")
       echo "  Health factor: $NEW_HF"
     fi
   fi

@@ -4,15 +4,8 @@
 # Example: aave-borrow.sh USDC 100
 set -euo pipefail
 
-SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/skills/aave-delegation}"
-CONFIG="$SKILL_DIR/config.json"
-
-# Strip cast's bracket annotations e.g. "7920000000000000 [7.92e15]" → "7920000000000000"
-strip_cast() { sed 's/ *\[.*\]//' | tr -d ' '; }
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-NC='\033[0m'
+# shellcheck source=./lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # === Parse arguments ===
 if [ $# -lt 2 ]; then
@@ -25,53 +18,56 @@ SYMBOL="$1"
 AMOUNT="$2"
 
 # === Load config ===
-RPC_URL="${AAVE_RPC_URL:-$(jq -r '.rpcUrl' "$CONFIG")}"
-AGENT_PK="${AAVE_AGENT_PRIVATE_KEY:-$(jq -r '.agentPrivateKey' "$CONFIG")}"
-DELEGATOR="${AAVE_DELEGATOR_ADDRESS:-$(jq -r '.delegatorAddress' "$CONFIG")}"
-POOL="${AAVE_POOL_ADDRESS:-$(jq -r '.poolAddress' "$CONFIG")}"
-DATA_PROVIDER=$(jq -r '.dataProviderAddress' "$CONFIG")
-CHAIN=$(jq -r '.chain // "unknown"' "$CONFIG")
-
-ASSET_ADDR=$(jq -r ".assets[\"$SYMBOL\"].address // empty" "$CONFIG")
-DECIMALS=$(jq -r ".assets[\"$SYMBOL\"].decimals // empty" "$CONFIG")
-
-if [ -z "$ASSET_ADDR" ] || [ -z "$DECIMALS" ]; then
-  echo -e "${RED}✗ Asset $SYMBOL not found in config${NC}"
-  exit 1
-fi
+load_config
+resolve_asset "$SYMBOL"
 
 AGENT_ADDR=$(cast wallet address "$AGENT_PK")
 
+# Validate the borrow amount before it reaches bc. A negative amount otherwise
+# passes every safety check — the cap comparison passes, and a negative debt
+# delta *raises* the projected health factor — before failing at the ABI layer.
+# A sub-unit amount truncates to an empty string and crashes bc with no
+# diagnostic.
+if ! [[ "$AMOUNT" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [ "$(echo "$AMOUNT > 0" | bc)" != "1" ]; then
+  echo -e "${RED}✗ INVALID_AMOUNT: '$AMOUNT' must be a positive decimal number${NC}"
+  exit 1
+fi
+
 # Convert human amount to raw (e.g., 100 USDC → 100000000)
-AMOUNT_RAW=$(echo "$AMOUNT * (10^$DECIMALS)" | bc | cut -d'.' -f1)
+AMOUNT_RAW=$(to_units "$AMOUNT" "$DECIMALS")
+
+if [ -z "$AMOUNT_RAW" ] || [ "$AMOUNT_RAW" = "0" ]; then
+  echo -e "${RED}✗ INVALID_AMOUNT: '$AMOUNT' rounds to zero at $DECIMALS decimals${NC}"
+  exit 1
+fi
 
 # Safety config
 MIN_HF="${AAVE_MIN_HEALTH_FACTOR:-$(jq -r '.safety.minHealthFactor // "1.5"' "$CONFIG")}"
 MAX_BORROW=$(jq -r '.safety.maxBorrowPerTx // "1000"' "$CONFIG")
 MAX_BORROW_UNIT=$(jq -r '.safety.maxBorrowPerTxUnit // "USDC"' "$CONFIG")
 
-# Resolve Aave price oracle once — used by Safety Check 1 (cross-asset cap)
-# and Safety Check 3 (projected health factor). Both checks need to convert
-# the borrow amount into the pool's base currency.
-#
-# === Base-currency assumption ===
-# Aave V3's price oracle returns prices in a single "base currency" with a
-# fixed number of decimals (BASE_CURRENCY_UNIT on the oracle contract).
-# Most V3 markets — including Ethereum mainnet, Polygon, Optimism, Arbitrum,
-# and Base — use **USD with 8 decimals** (BASE_CURRENCY_UNIT = 1e8). Some
-# deployments (notably the original Aave V2 ETH market and a handful of L2
-# variants) instead denominate in **ETH with 18 decimals**. If you're
-# pointing this script at such a market, override via:
-#
-#   export AAVE_BASE_CURRENCY_DECIMALS=18
-#
-# This only affects the `~$X` *display* values printed to the user; the
-# safety comparisons (cap, HF projection) are done in base-currency units on
-# both sides of every inequality, so they remain correct regardless of the
-# chosen decimals. To verify the right value for a market, query the
-# oracle's BASE_CURRENCY_UNIT() getter and confirm it equals 10^DECIMALS.
-BASE_CURRENCY_DECIMALS="${AAVE_BASE_CURRENCY_DECIMALS:-8}"
-BASE_CURRENCY_UNIT=$(echo "10^$BASE_CURRENCY_DECIMALS" | bc)
+# Both thresholds are only ever consumed inside `if (( $(... | bc) ))`, where a
+# bc parse error expands to `(( ))` — which bash evaluates as false — and where
+# `set -e` does not apply. A non-numeric or empty value therefore disables the
+# check silently rather than failing. Validate here, at the boundary.
+if ! [[ "$MIN_HF" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo -e "${RED}✗ INVALID_CONFIG: safety.minHealthFactor '$MIN_HF' is not a positive decimal${NC}"
+  exit 1
+fi
+if ! [[ "$MAX_BORROW" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo -e "${RED}✗ INVALID_CONFIG: safety.maxBorrowPerTx '$MAX_BORROW' is not a positive decimal${NC}"
+  exit 1
+fi
+
+# Gas units for the borrow tx. Safety Check 4 reserves this much gas and the
+# send below caps at it, so the two must stay equal — if the cap were higher
+# than the reservation, Check 4 could pass on a balance the tx can outspend.
+BORROW_GAS_LIMIT=500000
+
+# Safety Check 1 (cross-asset cap) and Safety Check 3 (projected health
+# factor) both convert the borrow amount into the pool's base currency, so
+# resolve the oracle once here.
+init_base_currency
 
 ADDRESSES_PROVIDER=$(cast call "$POOL" "ADDRESSES_PROVIDER()(address)" \
   --rpc-url "$RPC_URL" | strip_cast)
@@ -79,9 +75,22 @@ ORACLE=$(cast call "$ADDRESSES_PROVIDER" "getPriceOracle()(address)" \
   --rpc-url "$RPC_URL" | strip_cast)
 ASSET_PRICE=$(cast call "$ORACLE" "getAssetPrice(address)(uint256)" \
   "$ASSET_ADDR" --rpc-url "$RPC_URL" | strip_cast)
-# Borrow value in base currency (Aave V3 returns USD with 8 decimals on most chains; see note above)
+
+# getAssetPrice returns 0 rather than reverting when the oracle has no price
+# source for an address — which is what a typo'd or wrong-chain asset address
+# in config looks like. A zero price makes BORROW_BASE 0, and both value-based
+# safety checks then pass for ANY amount: the cap compares 0 against the cap,
+# and the HF projection adds 0 to existing debt. Refuse to price-blind borrow.
+if [ -z "$ASSET_PRICE" ] || [ "$ASSET_PRICE" = "0" ]; then
+  echo -e "${RED}✗ ORACLE_PRICE_UNAVAILABLE: oracle returned 0 for $SYMBOL ($ASSET_ADDR)${NC}"
+  echo "  Cannot value this borrow, so the per-tx cap and the health-factor"
+  echo "  projection would both pass vacuously."
+  echo "  Check that the $SYMBOL address in $CONFIG is correct for this chain."
+  exit 1
+fi
+
 BORROW_BASE=$(echo "$AMOUNT_RAW * $ASSET_PRICE / (10^$DECIMALS)" | bc)
-BORROW_USD=$(echo "scale=2; $BORROW_BASE / $BASE_CURRENCY_UNIT" | bc)
+BORROW_USD=$(to_usd "$BORROW_BASE")
 
 echo "=== Aave V3 Credit Delegation Borrow ==="
 echo "  Chain:      $CHAIN"
@@ -104,8 +113,16 @@ if [ -z "$CAP_ASSET_ADDR" ]; then
 fi
 CAP_PRICE=$(cast call "$ORACLE" "getAssetPrice(address)(uint256)" \
   "$CAP_ASSET_ADDR" --rpc-url "$RPC_URL" | strip_cast)
+# A zero cap price collapses CAP_BASE to 0, which would reject every borrow
+# rather than permit one — but the diagnostic would be an unrelated
+# AMOUNT_EXCEEDS_CAP, so fail with the real reason.
+if [ -z "$CAP_PRICE" ] || [ "$CAP_PRICE" = "0" ]; then
+  echo -e "${RED}✗ ORACLE_PRICE_UNAVAILABLE: oracle returned 0 for the cap unit $MAX_BORROW_UNIT ($CAP_ASSET_ADDR)${NC}"
+  echo "  Check that the $MAX_BORROW_UNIT address in $CONFIG is correct for this chain."
+  exit 1
+fi
 CAP_BASE=$(echo "$MAX_BORROW * $CAP_PRICE" | bc | cut -d'.' -f1)
-CAP_USD=$(echo "scale=2; $CAP_BASE / $BASE_CURRENCY_UNIT" | bc)
+CAP_USD=$(to_usd "$CAP_BASE")
 
 if (( $(echo "$BORROW_BASE > $CAP_BASE" | bc) )); then
   echo -e "${RED}✗ AMOUNT_EXCEEDS_CAP: $AMOUNT $SYMBOL (~\$$BORROW_USD) exceeds cap $MAX_BORROW $MAX_BORROW_UNIT (~\$$CAP_USD)${NC}"
@@ -117,19 +134,16 @@ echo -e "${GREEN}✓${NC} Amount within per-tx cap (~\$$BORROW_USD ≤ ~\$$CAP_U
 # === SAFETY CHECK 2: Delegation allowance ===
 echo "--- Safety Check 2: Delegation Allowance ---"
 
-# Resolve variable debt token
-TOKENS=$(cast call "$DATA_PROVIDER" \
-  "getReserveTokensAddresses(address)(address,address,address)" \
-  "$ASSET_ADDR" \
-  --rpc-url "$RPC_URL")
-VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | strip_cast)
+if ! VAR_DEBT_TOKEN=$(resolve_var_debt_token "$ASSET_ADDR"); then
+  exit 1
+fi
 
 ALLOWANCE_RAW=$(cast call "$VAR_DEBT_TOKEN" \
   "borrowAllowance(address,address)(uint256)" \
   "$DELEGATOR" "$AGENT_ADDR" \
   --rpc-url "$RPC_URL")
 ALLOWANCE_RAW=$(echo "$ALLOWANCE_RAW" | strip_cast)
-ALLOWANCE=$(echo "scale=$DECIMALS; $ALLOWANCE_RAW / (10^$DECIMALS)" | bc)
+ALLOWANCE=$(from_units "$ALLOWANCE_RAW" "$DECIMALS")
 
 if [ "$ALLOWANCE_RAW" = "0" ]; then
   echo -e "${RED}✗ INSUFFICIENT_ALLOWANCE: No delegation for $SYMBOL${NC}"
@@ -158,30 +172,29 @@ AVAILABLE_BORROWS=$(echo "$ACCOUNT_DATA" | sed -n '3p' | strip_cast)
 LIQ_THRESHOLD=$(echo "$ACCOUNT_DATA" | sed -n '4p' | strip_cast)
 HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | strip_cast)
 
-MAX_UINT="115792089237316195423570985008687907853269984665640564039457584007913129639935"
 if [ "$HEALTH_FACTOR_RAW" = "$MAX_UINT" ]; then
   HF="999"  # effectively infinite
   HF_DISPLAY="∞ (no current debt)"
 else
-  HF=$(echo "scale=4; $HEALTH_FACTOR_RAW / 1000000000000000000" | bc)
+  HF=$(hf_from_raw "$HEALTH_FACTOR_RAW")
   HF_DISPLAY="$HF"
 fi
 
-COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / $BASE_CURRENCY_UNIT" | bc)
-DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / $BASE_CURRENCY_UNIT" | bc)
+COLLATERAL_USD=$(to_usd "$TOTAL_COLLATERAL")
+DEBT_USD=$(to_usd "$TOTAL_DEBT")
 
 echo "  Current HF:     $HF_DISPLAY"
 echo "  Collateral:     \$$COLLATERAL_USD"
 echo "  Existing debt:  \$$DEBT_USD"
 
-# Check current HF is above minimum
+# The 999 test is not redundant: it keeps a no-debt account (whose HF is
+# infinite) from being rejected by an absurdly high configured minimum.
 if (( $(echo "$HF < $MIN_HF" | bc -l) )) && [ "$HF" != "999" ]; then
   echo -e "${RED}✗ HEALTH_FACTOR_TOO_LOW: Current HF ($HF) is already below minimum ($MIN_HF)${NC}"
   echo "  Delegator should add collateral or repay debt before agent borrows more."
   exit 1
 fi
 
-# Check available borrows
 if [ "$AVAILABLE_BORROWS" = "0" ]; then
   echo -e "${RED}✗ No available borrowing capacity for delegator${NC}"
   exit 1
@@ -219,25 +232,24 @@ GAS_PRICE=$(cast gas-price --rpc-url "$RPC_URL" 2>/dev/null || echo "")
 # chain that doesn't expose eth_gasPrice the way cast expects), fall back to
 # a conservative floor instead of multiplying through with 0. Otherwise
 # MIN_GAS_WEI collapses to 0 and the `$AGENT_BALANCE < 0` comparison below
-# silently green-lights any non-zero balance — exactly the kind of safety
-# contract drift this skill is meant to catch. 1e14 wei = 0.0001 ETH covers
-# a 500k-gas borrow at ~200 gwei on every EVM chain Aave is deployed on.
+# silently green-lights any non-zero balance. 1e14 wei = 0.0001 ETH covers a
+# 500k-gas borrow at ~200 gwei on every EVM chain Aave is deployed on.
 if [ -z "$GAS_PRICE" ] || [ "$GAS_PRICE" = "0" ]; then
   MIN_GAS_WEI="100000000000000"
   GAS_NOTE=" (RPC gas-price unavailable — using 0.0001 ETH floor)"
 else
-  MIN_GAS_WEI=$(echo "$GAS_PRICE * 500000" | bc)
+  MIN_GAS_WEI=$(echo "$GAS_PRICE * $BORROW_GAS_LIMIT" | bc)
   GAS_NOTE=""
 fi
 
+MIN_GAS_ETH=$(cast from-wei "$MIN_GAS_WEI")
 if [ "$AGENT_BALANCE" = "0" ]; then
   echo -e "${RED}✗ INSUFFICIENT_GAS: Agent wallet has 0 ETH${NC}"
-  echo "  Send at least 0.001 ETH to $AGENT_ADDR on $CHAIN for gas."
+  echo "  Send at least $MIN_GAS_ETH ETH to $AGENT_ADDR on $CHAIN for gas."
   exit 1
 elif (( $(echo "$AGENT_BALANCE < $MIN_GAS_WEI" | bc) )); then
-  MIN_GAS_ETH=$(cast from-wei "$MIN_GAS_WEI")
   echo -e "${RED}✗ INSUFFICIENT_GAS: Agent has $AGENT_ETH ETH but needs ~$MIN_GAS_ETH ETH for gas${NC}"
-  echo "  Send at least 0.001 ETH to $AGENT_ADDR on $CHAIN."
+  echo "  Send at least $MIN_GAS_ETH ETH to $AGENT_ADDR on $CHAIN."
   exit 1
 fi
 echo -e "${GREEN}✓${NC} Agent gas balance: $AGENT_ETH ETH$GAS_NOTE"
@@ -263,7 +275,7 @@ TX_OUTPUT=$(cast send "$POOL" \
   "$DELEGATOR" \
   --private-key "$AGENT_PK" \
   --rpc-url "$RPC_URL" \
-  --gas-limit 500000 \
+  --gas-limit "$BORROW_GAS_LIMIT" \
   --json 2>&1) || TX_EXIT=$?
 
 if [ $TX_EXIT -ne 0 ]; then
@@ -272,25 +284,54 @@ if [ $TX_EXIT -ne 0 ]; then
     echo -e "${RED}✗ INSUFFICIENT_GAS: Agent wallet can't afford gas for this transaction.${NC}"
     echo "  Send more ETH to $AGENT_ADDR on $CHAIN."
   elif echo "$TX_OUTPUT" | grep -qi "revert"; then
-    # Decode Aave-specific revert reasons
-    REASON="$TX_OUTPUT"
-    if echo "$TX_OUTPUT" | grep -q "0x11"; then
-      REASON="Arithmetic overflow — likely insufficient collateral or invalid borrow parameters"
-    elif echo "$TX_OUTPUT" | grep -qi "BORROWING_NOT_ENABLED"; then
+    # Decode Aave-specific revert reasons. Named reasons are matched first: the
+    # panic check below is a substring test, and cast's output routinely
+    # contains addresses and calldata that happen to include "0x11", so
+    # matching it first would shadow every accurate reason with a guess.
+    REASON=""
+    if echo "$TX_OUTPUT" | grep -qi "BORROWING_NOT_ENABLED"; then
       REASON="Borrowing is not enabled for $SYMBOL on this pool"
     elif echo "$TX_OUTPUT" | grep -qi "COLLATERAL_CANNOT_COVER"; then
       REASON="Delegator's collateral cannot cover this borrow amount"
     elif echo "$TX_OUTPUT" | grep -qi "HEALTH_FACTOR_LOWER"; then
       REASON="Borrow would drop the delegator's health factor below liquidation threshold"
+    elif echo "$TX_OUTPUT" | grep -qE '0x4e487b71|Panic.*0x11'; then
+      REASON="Arithmetic overflow — likely insufficient collateral or invalid borrow parameters"
     fi
-    echo -e "${RED}✗ BORROW_REVERTED: $REASON${NC}"
+    # Always carry the raw output; a guessed reason without it is unactionable.
+    if [ -n "$REASON" ]; then
+      echo -e "${RED}✗ BORROW_REVERTED: $REASON${NC}"
+      echo "  Raw: $TX_OUTPUT"
+    else
+      echo -e "${RED}✗ BORROW_REVERTED: $TX_OUTPUT${NC}"
+    fi
   else
     echo -e "${RED}✗ BORROW_FAILED: $TX_OUTPUT${NC}"
   fi
   exit 1
 fi
 
-TX_HASH=$(echo "$TX_OUTPUT" | jq -r '.transactionHash // .hash // empty' 2>/dev/null)
+# The borrow has already landed on-chain at this point — cast exited 0. Parsing
+# must never be allowed to look like failure: `2>&1` above merges cast's stderr
+# warnings into TX_OUTPUT, which breaks jq, and under `set -e` an unguarded
+# top-level assignment would then kill the script with no output at all. An
+# agent reads that as "the borrow failed" and retries, doubling the debt.
+if ! TX_HASH=$(printf '%s' "$TX_OUTPUT" | jq -r '.transactionHash // .hash // empty' 2>/dev/null); then
+  echo -e "${RED}✗ BORROW_SENT_BUT_UNPARSEABLE: the borrow was submitted successfully"
+  echo -e "  but its receipt could not be parsed. DO NOT RETRY.${NC}"
+  echo "  Raw output: $TX_OUTPUT"
+  echo "  Verify the delegator's debt with: ./aave-status.sh $SYMBOL"
+  exit 1
+fi
+
+# Only an explicit failure status is treated as a revert; cast versions that
+# omit the field leave this empty and fall through.
+TX_STATUS=$(printf '%s' "$TX_OUTPUT" | jq -r '.status // empty' 2>/dev/null || echo "")
+if [ "$TX_STATUS" = "0x0" ] || [ "$TX_STATUS" = "0" ]; then
+  echo -e "${RED}✗ BORROW_REVERTED: transaction $TX_HASH was mined but reverted${NC}"
+  echo "  No debt was created and no tokens were received. Gas was still spent."
+  exit 1
+fi
 
 if [ -n "$TX_HASH" ]; then
   echo -e "${GREEN}✓ Borrow successful!${NC}"
@@ -299,18 +340,16 @@ if [ -n "$TX_HASH" ]; then
   echo "  Tokens sent to: $AGENT_ADDR"
   echo "  Debt charged to: $DELEGATOR"
   
-  # Verify new balance
   NEW_BALANCE_RAW=$(cast call "$ASSET_ADDR" \
     "balanceOf(address)(uint256)" \
     "$AGENT_ADDR" \
     --rpc-url "$RPC_URL" 2>/dev/null || echo "?")
   NEW_BALANCE_RAW=$(echo "$NEW_BALANCE_RAW" | strip_cast)
   if [ "$NEW_BALANCE_RAW" != "?" ]; then
-    NEW_BALANCE=$(echo "scale=$DECIMALS; $NEW_BALANCE_RAW / (10^$DECIMALS)" | bc)
+    NEW_BALANCE=$(from_units "$NEW_BALANCE_RAW" "$DECIMALS")
     echo "  Agent $SYMBOL balance: $NEW_BALANCE"
   fi
   
-  # Check new health factor
   NEW_ACCOUNT=$(cast call "$POOL" \
     "getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)" \
     "$DELEGATOR" \
@@ -318,7 +357,7 @@ if [ -n "$TX_HASH" ]; then
   if [ -n "$NEW_ACCOUNT" ]; then
     NEW_HF_RAW=$(echo "$NEW_ACCOUNT" | sed -n '6p' | strip_cast)
     if [ "$NEW_HF_RAW" != "$MAX_UINT" ]; then
-      NEW_HF=$(echo "scale=4; $NEW_HF_RAW / 1000000000000000000" | bc)
+      NEW_HF=$(hf_from_raw "$NEW_HF_RAW")
       echo "  New health factor: $NEW_HF"
     fi
   fi

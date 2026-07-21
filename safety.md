@@ -48,7 +48,7 @@ The agent's private key is stored in config.json. If the machine is compromised,
 If you forget about an active delegation, the agent (or a compromised agent) can borrow at any time.
 
 **Mitigations:**
-- Regularly audit active delegations: `scripts/aave-status.sh`
+- Regularly audit active delegations: `./aave-status.sh`
 - Revoke delegation when not needed: call `approveDelegation(agentAddr, 0)` on the DebtToken
 - Set calendar reminders to review delegation status
 

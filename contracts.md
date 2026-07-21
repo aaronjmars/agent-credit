@@ -1,6 +1,6 @@
 # Aave V3 Contract Addresses
 
-> All addresses below are **Aave V3** deployments. The skill also works with **Aave V2** (same function signatures for credit delegation) — just swap in the V2 LendingPool and ProtocolDataProvider addresses.
+> All addresses below are **Aave V3** deployments. Credit delegation uses the same function signatures on V2, and the status/repay/setup scripts work there, but `aave-borrow.sh` is V3-only — it resolves the oracle via `ADDRESSES_PROVIDER()`, which V2's LendingPool does not expose.
 
 ## Mainnet Deployments
 

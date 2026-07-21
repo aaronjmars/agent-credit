@@ -2,22 +2,18 @@
 # aave-setup.sh — Verify skill configuration and dependencies
 set -euo pipefail
 
-# Strip cast's bracket annotations e.g. "7920000000000000 [7.92e15]" → "7920000000000000"
-strip_cast() { sed 's/ *\[.*\]//' | tr -d ' '; }
-
-SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/skills/aave-delegation}"
-CONFIG="$SKILL_DIR/config.json"
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# shellcheck source=./lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 ok()   { echo -e "${GREEN}✓${NC} $1"; }
-warn() { echo -e "${YELLOW}⚠${NC} $1"; }
+warn() { echo -e "${YELLOW}⚠${NC} $1"; WARNINGS=$((WARNINGS + 1)); }
 fail() { echo -e "${RED}✗${NC} $1"; }
 
+# This script deliberately does NOT use lib.sh's load_config: that aborts on
+# the first missing field, whereas setup's whole job is to report every
+# problem at once.
 ERRORS=0
+WARNINGS=0
 
 echo "=== Aave Delegation Skill Setup Check ==="
 echo ""
@@ -87,14 +83,7 @@ else
   ok "DataProvider address: $DATA_PROVIDER"
 fi
 
-# Aave V3's price oracle denominates everything in a single "base currency"
-# with a fixed number of decimals. USD/8 covers Ethereum, Polygon, Arbitrum,
-# Optimism, and Base; a handful of V2/L2 variants use ETH/18. aave-borrow.sh
-# respects AAVE_BASE_CURRENCY_DECIMALS — match it here so this setup check
-# doesn't print collateral/debt figures off by 1e10 against ETH-denominated
-# markets.
-BASE_CURRENCY_DECIMALS="${AAVE_BASE_CURRENCY_DECIMALS:-8}"
-BASE_CURRENCY_UNIT=$(echo "10^$BASE_CURRENCY_DECIMALS" | bc)
+init_base_currency
 
 # 4. Check RPC connectivity
 echo ""
@@ -133,7 +122,6 @@ fi
 echo ""
 echo "--- Aave Pool ---"
 if [ -n "$POOL" ] && [ -n "$RPC_URL" ]; then
-  # Check if pool is a contract
   CODE=$(cast code "$POOL" --rpc-url "$RPC_URL" 2>/dev/null || echo "0x")
   if [ "$CODE" = "0x" ] || [ -z "$CODE" ]; then
     fail "Pool address $POOL has no code — wrong address or wrong chain?"
@@ -149,12 +137,10 @@ echo "--- Delegation Status ---"
 if [ -n "$AGENT_PK" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ] && [ -n "$DATA_PROVIDER" ]; then
   AGENT_ADDR=$(cast wallet address "$AGENT_PK" 2>/dev/null)
   
-  # Iterate configured assets
   for SYMBOL in $(jq -r '.assets | keys[]' "$CONFIG" 2>/dev/null); do
     ASSET_ADDR=$(jq -r ".assets[\"$SYMBOL\"].address" "$CONFIG")
     DECIMALS=$(jq -r ".assets[\"$SYMBOL\"].decimals" "$CONFIG")
     
-    # Get debt token addresses
     TOKENS=$(cast call "$DATA_PROVIDER" \
       "getReserveTokensAddresses(address)(address,address,address)" \
       "$ASSET_ADDR" \
@@ -173,7 +159,6 @@ if [ -n "$AGENT_PK" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ] && [ -n "$DATA
       continue
     fi
     
-    # Check allowance
     ALLOWANCE_RAW=$(cast call "$VAR_DEBT_TOKEN" \
       "borrowAllowance(address,address)(uint256)" \
       "$DELEGATOR" "$AGENT_ADDR" \
@@ -184,7 +169,10 @@ if [ -n "$AGENT_PK" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ] && [ -n "$DATA
     if [ "$ALLOWANCE_RAW" = "0" ]; then
       warn "$SYMBOL: No delegation allowance — delegator must call approveDelegation()"
     else
-      ALLOWANCE=$(echo "scale=$DECIMALS; $ALLOWANCE_RAW / (10^$DECIMALS)" | bc 2>/dev/null || echo "$ALLOWANCE_RAW")
+      # The fallback shows the raw value labelled as raw. It previously fell
+      # back to the bare integer, which read as a 10^decimals overstatement of
+      # the delegation on the one screen used to confirm its size.
+      ALLOWANCE=$(from_units "$ALLOWANCE_RAW" "$DECIMALS" 2>/dev/null || echo "?(raw $ALLOWANCE_RAW)")
       ok "$SYMBOL: Delegation allowance = $ALLOWANCE $SYMBOL (DebtToken: $VAR_DEBT_TOKEN)"
     fi
   done
@@ -206,14 +194,14 @@ if [ -n "$POOL" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ]; then
     HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | strip_cast)
     
     # Values are in base currency — usually USD/8-dec, override via AAVE_BASE_CURRENCY_DECIMALS
-    COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / $BASE_CURRENCY_UNIT" | bc 2>/dev/null || echo "?")
-    DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / $BASE_CURRENCY_UNIT" | bc 2>/dev/null || echo "?")
-    AVAILABLE_USD=$(echo "scale=2; $AVAILABLE_BORROWS / $BASE_CURRENCY_UNIT" | bc 2>/dev/null || echo "?")
+    COLLATERAL_USD=$(to_usd "$TOTAL_COLLATERAL" 2>/dev/null || echo "?")
+    DEBT_USD=$(to_usd "$TOTAL_DEBT" 2>/dev/null || echo "?")
+    AVAILABLE_USD=$(to_usd "$AVAILABLE_BORROWS" 2>/dev/null || echo "?")
     
-    if [ "$HEALTH_FACTOR_RAW" = "115792089237316195423570985008687907853269984665640564039457584007913129639935" ]; then
+    if [ "$HEALTH_FACTOR_RAW" = "$MAX_UINT" ]; then
       HF="∞ (no debt)"
     else
-      HF=$(echo "scale=4; $HEALTH_FACTOR_RAW / 1000000000000000000" | bc 2>/dev/null || echo "?")
+      HF=$(hf_from_raw "$HEALTH_FACTOR_RAW" 2>/dev/null || echo "?")
     fi
     
     ok "Collateral: \$$COLLATERAL_USD"
@@ -225,11 +213,14 @@ if [ -n "$POOL" ] && [ -n "$RPC_URL" ] && [ -n "$DELEGATOR" ]; then
   fi
 fi
 
-# Summary
 echo ""
 echo "=== Summary ==="
-if [ "$ERRORS" -eq 0 ]; then
+if [ "$ERRORS" -eq 0 ] && [ "$WARNINGS" -eq 0 ]; then
   ok "All checks passed. Skill is ready."
+elif [ "$ERRORS" -eq 0 ]; then
+  # Not an error, but not "ready" either: a run where every asset has zero
+  # delegation allowance produces only warnings, and the skill cannot borrow.
+  warn "No errors, but $WARNINGS warning(s) above — review them before relying on the skill."
 else
   fail "$ERRORS error(s) found. Fix them before using the skill."
   exit 1

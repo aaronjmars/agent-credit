@@ -26,11 +26,13 @@ jobs:
       - name: Run shellcheck
         run: |
           shellcheck --severity=warning \
+            lib.sh \
             aave-borrow.sh \
             aave-repay.sh \
             aave-setup.sh \
             aave-status.sh \
             tests/test-borrow-contract.sh \
+            tests/test-repay-contract.sh \
             tests/mocks/cast
 
   test:
@@ -45,8 +47,13 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y bc jq
 
-      # Exercises aave-borrow.sh against tests/mocks/cast — no network, no real
-      # RPC. Covers the four safety-contract gaps closed in PRs #5–#7
-      # (cross-asset cap, projected health factor, gas-price-zero floor).
+      # Both suites run against tests/mocks/cast — no network, no real RPC.
+      # Borrow covers the cross-asset cap, the projected health factor, the
+      # gas-price-zero floor, oracle-price-zero, config and amount validation,
+      # and the exact borrow argv. Repay covers non-idempotent retry, reverted
+      # receipts, and the exact repay argv.
       - name: Run borrow contract tests
         run: bash tests/test-borrow-contract.sh
+
+      - name: Run repay contract tests
+        run: bash tests/test-repay-contract.sh
