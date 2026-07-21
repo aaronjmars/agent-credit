@@ -37,7 +37,18 @@ plus `jq` and `bc`.
 ```bash
 git clone https://github.com/aaronjmars/agent-credit.git && cd agent-credit
 cp config.example.json config.json      # then fill in your own values (gitignored)
-./aave-setup.sh                          # verify config, deps, and delegation status
+SKILL_DIR="$PWD" ./aave-setup.sh         # verify config, deps, and delegation status
+```
+
+`SKILL_DIR` is required here: the scripts read `$SKILL_DIR/config.json` and
+default that to `~/.openclaw/skills/aave-delegation`, so a repo-root
+`config.json` is invisible without it.
+
+Run the test suites — they need neither a network nor a real key:
+
+```bash
+bash tests/test-borrow-contract.sh
+bash tests/test-repay-contract.sh
 ```
 
 The scripts are for the **agent** to run; the delegator only approves delegation

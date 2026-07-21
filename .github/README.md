@@ -2,7 +2,7 @@
 
 Give your AI agent a credit line. It borrows from Aave when it needs funds, and the debt accrues on your position. You stay in control — you choose which assets it can borrow, how much, and you can revoke anytime.
 
-Works on **Aave V2** and **Aave V3**. Preconfigured for Base, Ethereum, Polygon, and Arbitrum — but works on any EVM chain where Aave is deployed.
+Borrowing requires **Aave V3**; status, repay, and setup also work against **Aave V2** (see [SKILL.md](../SKILL.md) for why). Preconfigured for Base, Ethereum, Polygon, and Arbitrum — but works on any EVM chain where Aave V3 is deployed.
 
 ![Agent Credit — Aave Credit Delegation](../img/credit.png)
 
@@ -17,12 +17,10 @@ Combines naturally with **[Bankr](https://bankr.bot/)** skills — borrow USDC v
 ## What This Enables
 
 - **Self-funding agents** — The agent borrows stablecoins or tokens to pay for operations without you manually transferring funds each time
-- **Autonomous DCA** — Agent borrows USDC periodically, then uses Bankr to swap into ETH
-- **Gas self-sufficiency** — Agent borrows a tiny amount of WETH to cover its own gas when it runs low
-- **On-demand liquidity** — Agent accesses capital exactly when needed, not sitting idle in a wallet
-- **Borrow + swap combos** — Borrow USDC via delegation, swap to any token via Bankr, all in one agent flow
+- **On-demand liquidity** — Capital is drawn exactly when needed rather than sitting idle in the agent's wallet
+- **Borrow + swap combos** — Borrow USDC via delegation, swap to any token via Bankr; the basis for autonomous DCA
 
-The agent only needs a wallet with a tiny amount of ETH for gas. All real capital comes from your Aave position via delegation.
+The agent only needs a wallet with a tiny amount of ETH for gas. All real capital comes from your Aave position via delegation. Note the agent cannot borrow its way out of an empty gas tank — see [Step 4](#step-4-fund-the-agent-wallet-for-gas).
 
 ## How Credit Delegation Works
 
@@ -137,6 +135,8 @@ The agent wallet needs a small amount of ETH to pay for transaction gas. On Base
 
 Send a tiny amount of ETH to the agent's address from your wallet (any wallet app, exchange, or bridge works).
 
+This has to come from you. The agent cannot borrow gas for itself: the borrow's own gas check rejects the transaction precisely when the balance is too low, and a borrowed WETH balance is an ERC-20 that cannot pay gas without an unwrap that also costs gas.
+
 ## Step 5: Verify
 
 Run the setup check to confirm everything is connected:
@@ -145,7 +145,7 @@ Run the setup check to confirm everything is connected:
 ./aave-setup.sh
 ```
 
-This shows delegation allowances per asset, your health factor, and whether the agent has gas. No private key needed — it only reads on-chain data.
+This shows delegation allowances per asset, your health factor, and whether the agent has gas. It only reads on-chain data — but it does need `agentPrivateKey` in config, because it derives the agent's address from it to check that address's allowances and balance.
 
 ---
 
