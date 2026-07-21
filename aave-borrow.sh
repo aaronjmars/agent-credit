@@ -187,6 +187,8 @@ echo "  Current HF:     $HF_DISPLAY"
 echo "  Collateral:     \$$COLLATERAL_USD"
 echo "  Existing debt:  \$$DEBT_USD"
 
+# The 999 test is not redundant: it keeps a no-debt account (whose HF is
+# infinite) from being rejected by an absurdly high configured minimum.
 if (( $(echo "$HF < $MIN_HF" | bc -l) )) && [ "$HF" != "999" ]; then
   echo -e "${RED}✗ HEALTH_FACTOR_TOO_LOW: Current HF ($HF) is already below minimum ($MIN_HF)${NC}"
   echo "  Delegator should add collateral or repay debt before agent borrows more."
@@ -240,14 +242,14 @@ else
   GAS_NOTE=""
 fi
 
+MIN_GAS_ETH=$(cast from-wei "$MIN_GAS_WEI")
 if [ "$AGENT_BALANCE" = "0" ]; then
   echo -e "${RED}✗ INSUFFICIENT_GAS: Agent wallet has 0 ETH${NC}"
-  echo "  Send at least 0.001 ETH to $AGENT_ADDR on $CHAIN for gas."
+  echo "  Send at least $MIN_GAS_ETH ETH to $AGENT_ADDR on $CHAIN for gas."
   exit 1
 elif (( $(echo "$AGENT_BALANCE < $MIN_GAS_WEI" | bc) )); then
-  MIN_GAS_ETH=$(cast from-wei "$MIN_GAS_WEI")
   echo -e "${RED}✗ INSUFFICIENT_GAS: Agent has $AGENT_ETH ETH but needs ~$MIN_GAS_ETH ETH for gas${NC}"
-  echo "  Send at least 0.001 ETH to $AGENT_ADDR on $CHAIN."
+  echo "  Send at least $MIN_GAS_ETH ETH to $AGENT_ADDR on $CHAIN."
   exit 1
 fi
 echo -e "${GREEN}✓${NC} Agent gas balance: $AGENT_ETH ETH$GAS_NOTE"

@@ -15,7 +15,9 @@
 # Where config.json lives. SKILL_DIR is the one knob that relocates it; the
 # scripts themselves never hardcode the path.
 SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/skills/aave-delegation}"
-CONFIG="$SKILL_DIR/config.json"
+# Honoured as an override so the value the scripts use and the value
+# tests/mocks/cast reads are the same variable, not two that happen to agree.
+CONFIG="${CONFIG:-$SKILL_DIR/config.json}"
 
 # Strip cast's bracket annotations e.g. "7920000000000000 [7.92e15]" → "7920000000000000"
 strip_cast() { sed 's/ *\[.*\]//' | tr -d ' '; }

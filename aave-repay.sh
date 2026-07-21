@@ -48,13 +48,18 @@ if [ "$DEBT_RAW" = "0" ]; then
   exit 0
 fi
 
-# Handle "max" repayment
+# One flag answers "is this a max repay?" everywhere below. It was previously
+# asked three different ways — including by string-comparing the human amount
+# against a bc-formatted debt figure.
 if [ "$AMOUNT" = "max" ]; then
-  # For max repay, use type(uint256).max which tells Aave to repay the full debt
+  IS_MAX_REPAY=true
+  # type(uint256).max tells Aave to settle the exact debt at execution time
+  # rather than a figure quoted a few seconds earlier.
   AMOUNT_RAW="$MAX_UINT"
   AMOUNT="$DEBT"
   echo "  Repaying: MAX (full debt = $DEBT $SYMBOL)"
 else
+  IS_MAX_REPAY=false
   AMOUNT_RAW=$(to_units "$AMOUNT" "$DECIMALS")
   echo "  Repaying: $AMOUNT $SYMBOL ($AMOUNT_RAW raw)"
 fi
@@ -69,9 +74,9 @@ AGENT_BALANCE=$(from_units "$AGENT_BALANCE_RAW" "$DECIMALS")
 
 echo "  Agent $SYMBOL balance: $AGENT_BALANCE"
 
-# For max repay, we need at least the debt amount
-NEEDED_RAW="$DEBT_RAW"
-if [ "$AMOUNT" != "$DEBT" ]; then
+if [ "$IS_MAX_REPAY" = true ]; then
+  NEEDED_RAW="$DEBT_RAW"
+else
   NEEDED_RAW="$AMOUNT_RAW"
 fi
 
@@ -83,6 +88,19 @@ if (( $(echo "$AGENT_BALANCE_RAW < $NEEDED_RAW" | bc) )); then
 fi
 echo -e "${GREEN}✓${NC} Agent has sufficient $SYMBOL"
 
+# The debt keeps accruing between this read and execution, and Aave pulls the
+# amount owed at execution time. A balance that only just covers the figure
+# read above can therefore still revert in transferFrom. Warn rather than
+# block: the shortfall is usually far smaller than the 1% approval buffer.
+if [ "$IS_MAX_REPAY" = true ]; then
+  BUFFERED_RAW=$(echo "$DEBT_RAW * 101 / 100" | bc)
+  if (( $(echo "$AGENT_BALANCE_RAW < $BUFFERED_RAW" | bc) )); then
+    echo -e "${YELLOW}⚠${NC} Balance covers the debt read just now but leaves under 1% headroom."
+    echo "  If interest accrues before this lands, the repay may revert. Consider"
+    echo "  repaying a fixed amount slightly below your balance instead of 'max'."
+  fi
+fi
+
 echo ""
 echo "--- Step 1: Approve Pool ---"
 
@@ -92,10 +110,9 @@ EXISTING_ALLOWANCE=$(cast call "$ASSET_ADDR" \
   --rpc-url "$RPC_URL")
 EXISTING_ALLOWANCE=$(echo "$EXISTING_ALLOWANCE" | strip_cast)
 
-if [ "$AMOUNT_RAW" = "$MAX_UINT" ]; then
-  APPROVE_AMOUNT="$DEBT_RAW"
-  # Add 1% buffer for accrued interest between approval and repay
-  APPROVE_AMOUNT=$(echo "$APPROVE_AMOUNT * 101 / 100" | bc)
+if [ "$IS_MAX_REPAY" = true ]; then
+  # 1% buffer for interest accruing between approval and repay.
+  APPROVE_AMOUNT="$BUFFERED_RAW"
 else
   APPROVE_AMOUNT="$AMOUNT_RAW"
 fi

@@ -130,7 +130,7 @@ reset_mocks() {
   unset MOCK_AGENT_ADDR MOCK_ADDRESSES_PROVIDER MOCK_ORACLE \
         MOCK_VAR_DEBT_USDC MOCK_ATOKEN_USDC MOCK_STABLE_DEBT_USDC \
         MOCK_ALLOWANCE_RAW MOCK_ERC20_ALLOWANCE \
-        MOCK_TOKEN_BALANCEOF MOCK_DEBT_BALANCEOF MOCK_TX_JSON || true
+        MOCK_TOKEN_BALANCEOF MOCK_DEBT_BALANCEOF MOCK_TX_JSON MOCK_ANNOTATE || true
   rm -f "$WORK_DIR/send.log"
 }
 
@@ -206,6 +206,26 @@ else
   PASS=$((PASS+1)); echo "  PASS insufficient balance (exit non-zero)"
 fi
 expect_send_count "insufficient balance (no send)" 0
+
+# ---- Scenario 6: max repay with thin headroom -------------------------------
+# Aave pulls the debt owed at execution time, which is higher than the figure
+# read a moment earlier. A balance that only just covers the read value can
+# still revert in transferFrom, so the script warns — without blocking, since
+# the shortfall is normally far below the 1% approval buffer.
+echo
+echo "[scenario 6] max repay with <1% headroom must warn but still proceed"
+reset_mocks
+export MOCK_DEBT_BALANCEOF="100000000"     # owes 100
+export MOCK_TOKEN_BALANCEOF="100200000"    # holds 100.2 — covers debt, under +1%
+export MOCK_ERC20_ALLOWANCE="500000000"
+export MOCK_TX_JSON='{"transactionHash":"0xfeedface","status":"0x1"}'
+run_repay USDC max
+expect_ok "thin-headroom max repay proceeds" $?
+if grep -q "headroom" "$WORK_DIR/last.out"; then
+  PASS=$((PASS+1)); echo "  PASS thin-headroom max repay (warned)"
+else
+  fail_with "thin-headroom max repay" "expected a headroom warning"
+fi
 
 echo
 echo "=== summary ==="

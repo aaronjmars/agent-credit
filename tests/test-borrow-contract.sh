@@ -189,7 +189,7 @@ reset_mocks() {
         MOCK_AVAILABLE_BORROWS_BASE MOCK_LIQ_THRESHOLD_BPS MOCK_LTV_BPS \
         MOCK_HEALTH_FACTOR_RAW \
         MOCK_AGENT_BALANCE_WEI MOCK_GAS_PRICE_WEI \
-        MOCK_TOKEN_BALANCEOF MOCK_TX_JSON || true
+        MOCK_TOKEN_BALANCEOF MOCK_TX_JSON MOCK_ANNOTATE || true
   rm -f "$WORK_DIR/send.log"
 }
 
@@ -356,6 +356,34 @@ export MOCK_GAS_PRICE_WEI="1000000000"
 run_borrow USDC -100
 expect_fail_with_tag "negative amount" "INVALID_AMOUNT" $?
 expect_no_send "negative amount (no tx sent)"
+
+# ---- Scenario 8: cast bracket annotations ----------------------------------
+# Real cast prints large integers as "1600000000000000000 [1.6e18]". strip_cast
+# exists solely to remove that, is applied at 20+ call sites, and was never
+# exercised — the mock emitted bare decimals everywhere. Break strip_cast and
+# every other scenario still passed. With MOCK_ANNOTATE=1 the same positive
+# control must still clear all four checks and build the identical argv.
+echo
+echo "[scenario 8] annotated cast output must be stripped before any arithmetic"
+reset_mocks
+export MOCK_ANNOTATE=1
+export MOCK_PRICE_USDC="100000000"
+export MOCK_PRICE_WETH="300000000000"
+export MOCK_TOTAL_COLLATERAL_BASE="1000000000000"
+export MOCK_TOTAL_DEBT_BASE="500000000000"
+export MOCK_AVAILABLE_BORROWS_BASE="300000000000"
+export MOCK_LIQ_THRESHOLD_BPS="8000"
+export MOCK_HEALTH_FACTOR_RAW="1600000000000000000"
+export MOCK_ALLOWANCE_RAW="1000000000000"
+export MOCK_AGENT_BALANCE_WEI="1000000000000000000"
+export MOCK_GAS_PRICE_WEI="1000000000"
+export MOCK_TX_JSON='{"transactionHash":"0xfeedface"}'
+export MOCK_TOKEN_BALANCEOF="100000000"
+run_borrow USDC 100
+expect_success_reaching_execute "annotated output (all checks pass)" $?
+expect_send_args "annotated output (argv identical to unannotated)" \
+  "0x0000000000000000000000000000000000000F00 borrow(address,uint256,uint256,uint16,address) 0x00000000000000000000000000000000000005DC 100000000 2 0 0x000000000000000000000000000000000000DEAD"
+unset MOCK_ANNOTATE
 
 echo
 echo "=== summary ==="

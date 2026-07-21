@@ -25,6 +25,8 @@
 #   MOCK_TX_JSON                 — JSON to emit on `cast send` success
 #   MOCK_SEND_LOG                — file to append each `cast send`'s positional
 #                                  argv to (flags omitted); unset = no logging
+#   MOCK_ANNOTATE                — 1 = emit uints the way real cast does, with
+#                                  a "[1.6e18]" bracket annotation appended
 #
 # Address-to-symbol resolution: the mock reads the config file at $CONFIG and
 # inverts the asset map.
@@ -44,6 +46,17 @@ addr_to_symbol() {
     | select((.value.address | ascii_downcase) == $a)
     | .key
   ' "$CONFIG_PATH" 2>/dev/null | head -n1
+}
+
+# Real cast appends a human-readable annotation to large integers, e.g.
+# "1600000000000000000 [1.6e18]". strip_cast exists solely to remove it, so
+# scenarios can turn it on to exercise that path.
+emit_uint() {
+  if [ "${MOCK_ANNOTATE:-0}" = "1" ]; then
+    printf '%s [%se18]\n' "$1" "$(echo "scale=2; $1 / 1000000000000000000" | bc)"
+  else
+    printf '%s\n' "$1"
+  fi
 }
 
 cmd="${1:-}"
@@ -88,7 +101,7 @@ case "$cmd" in
       "getAssetPrice(address)(uint256)")
         sym=$(addr_to_symbol "${args[0]}")
         var="MOCK_PRICE_${sym}"
-        printf '%s\n' "${!var:-0}"
+        emit_uint "${!var:-0}"
         exit 0
         ;;
       "getReserveTokensAddresses(address)(address,address,address)")
@@ -103,16 +116,16 @@ case "$cmd" in
         exit 0
         ;;
       "borrowAllowance(address,address)(uint256)")
-        printf '%s\n' "${MOCK_ALLOWANCE_RAW:-0}"
+        emit_uint "${MOCK_ALLOWANCE_RAW:-0}"
         exit 0
         ;;
       "getUserAccountData(address)(uint256,uint256,uint256,uint256,uint256,uint256)")
-        printf '%s\n' "${MOCK_TOTAL_COLLATERAL_BASE:-0}"
-        printf '%s\n' "${MOCK_TOTAL_DEBT_BASE:-0}"
-        printf '%s\n' "${MOCK_AVAILABLE_BORROWS_BASE:-0}"
-        printf '%s\n' "${MOCK_LIQ_THRESHOLD_BPS:-8000}"
-        printf '%s\n' "${MOCK_LTV_BPS:-7500}"
-        printf '%s\n' "${MOCK_HEALTH_FACTOR_RAW:-115792089237316195423570985008687907853269984665640564039457584007913129639935}"
+        emit_uint "${MOCK_TOTAL_COLLATERAL_BASE:-0}"
+        emit_uint "${MOCK_TOTAL_DEBT_BASE:-0}"
+        emit_uint "${MOCK_AVAILABLE_BORROWS_BASE:-0}"
+        emit_uint "${MOCK_LIQ_THRESHOLD_BPS:-8000}"
+        emit_uint "${MOCK_LTV_BPS:-7500}"
+        emit_uint "${MOCK_HEALTH_FACTOR_RAW:-115792089237316195423570985008687907853269984665640564039457584007913129639935}"
         exit 0
         ;;
       "balanceOf(address)(uint256)")
@@ -121,9 +134,9 @@ case "$cmd" in
         # represent "delegator owes 100 but the agent holds 50", which is the
         # entire subject of the repay solvency check.
         if [ -n "$(addr_to_symbol "$to")" ]; then
-          printf '%s\n' "${MOCK_TOKEN_BALANCEOF:-0}"
+          emit_uint "${MOCK_TOKEN_BALANCEOF:-0}"
         else
-          printf '%s\n' "${MOCK_DEBT_BALANCEOF:-0}"
+          emit_uint "${MOCK_DEBT_BALANCEOF:-0}"
         fi
         exit 0
         ;;

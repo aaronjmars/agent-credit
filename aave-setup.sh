@@ -6,13 +6,14 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 ok()   { echo -e "${GREEN}✓${NC} $1"; }
-warn() { echo -e "${YELLOW}⚠${NC} $1"; }
+warn() { echo -e "${YELLOW}⚠${NC} $1"; WARNINGS=$((WARNINGS + 1)); }
 fail() { echo -e "${RED}✗${NC} $1"; }
 
 # This script deliberately does NOT use lib.sh's load_config: that aborts on
 # the first missing field, whereas setup's whole job is to report every
 # problem at once.
 ERRORS=0
+WARNINGS=0
 
 echo "=== Aave Delegation Skill Setup Check ==="
 echo ""
@@ -214,8 +215,12 @@ fi
 
 echo ""
 echo "=== Summary ==="
-if [ "$ERRORS" -eq 0 ]; then
+if [ "$ERRORS" -eq 0 ] && [ "$WARNINGS" -eq 0 ]; then
   ok "All checks passed. Skill is ready."
+elif [ "$ERRORS" -eq 0 ]; then
+  # Not an error, but not "ready" either: a run where every asset has zero
+  # delegation allowance produces only warnings, and the skill cannot borrow.
+  warn "No errors, but $WARNINGS warning(s) above — review them before relying on the skill."
 else
   fail "$ERRORS error(s) found. Fix them before using the skill."
   exit 1
