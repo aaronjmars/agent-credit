@@ -127,24 +127,29 @@ if (( $(echo "$EXISTING_ALLOWANCE >= $APPROVE_AMOUNT" | bc) )); then
   echo -e "${GREEN}✓${NC} Pool already has sufficient allowance"
 else
   echo "  Approving Pool to spend $SYMBOL..."
-  APPROVE_TX=$(cast send "$ASSET_ADDR" \
+  # Capture the exit code rather than the parsed hash. The previous shape
+  # discarded stderr and re-sent the approve whenever the hash came back
+  # empty — including when the first send had actually succeeded and only the
+  # JSON parse failed, which spends gas on a redundant approval.
+  APPROVE_EXIT=0
+  APPROVE_OUT=$(cast send "$ASSET_ADDR" \
     "approve(address,uint256)" \
     "$POOL" \
     "$APPROVE_AMOUNT" \
     --private-key "$AGENT_PK" \
     --rpc-url "$RPC_URL" \
-    --json 2>/dev/null | jq -r '.transactionHash // .hash // empty' || echo "")
-  
-  if [ -z "$APPROVE_TX" ]; then
-    # Fallback without --json
-    cast send "$ASSET_ADDR" \
-      "approve(address,uint256)" \
-      "$POOL" \
-      "$APPROVE_AMOUNT" \
-      --private-key "$AGENT_PK" \
-      --rpc-url "$RPC_URL"
-  else
+    --json 2>&1) || APPROVE_EXIT=$?
+
+  if [ $APPROVE_EXIT -ne 0 ]; then
+    echo -e "${RED}✗ APPROVE_FAILED: $APPROVE_OUT${NC}"
+    exit 1
+  fi
+
+  APPROVE_TX=$(printf '%s' "$APPROVE_OUT" | jq -r '.transactionHash // .hash // empty' 2>/dev/null || echo "")
+  if [ -n "$APPROVE_TX" ]; then
     echo -e "${GREEN}✓${NC} Approved. TX: $APPROVE_TX"
+  else
+    echo -e "${GREEN}✓${NC} Approved (receipt not parseable, but the send succeeded)"
   fi
 fi
 
@@ -157,9 +162,15 @@ REPAY_AMOUNT="$AMOUNT_RAW"
 
 echo "  Pool.repay($ASSET_ADDR, $REPAY_AMOUNT, 2, $DELEGATOR)"
 
-# Capture without aborting on non-zero so the fallback/error path below can run
+# Capture the exit code without aborting, so the error path below can run
 # (under `set -e`, a top-level `var=$(cmd)` exits the script when cmd fails).
-TX_HASH=$(cast send "$POOL" \
+#
+# A repay is NOT idempotent: it pulls the agent's tokens each time. The
+# previous shape re-sent this transaction whenever no hash could be parsed,
+# which includes the case where the first send landed on-chain and only the
+# response failed to parse. There is no retry here for that reason.
+TX_EXIT=0
+TX_OUTPUT=$(cast send "$POOL" \
   "repay(address,uint256,uint256,address)" \
   "$ASSET_ADDR" \
   "$REPAY_AMOUNT" \
@@ -167,19 +178,35 @@ TX_HASH=$(cast send "$POOL" \
   "$DELEGATOR" \
   --private-key "$AGENT_PK" \
   --rpc-url "$RPC_URL" \
-  --json 2>/dev/null | jq -r '.transactionHash // .hash // empty') || true
+  --json 2>&1) || TX_EXIT=$?
 
-if [ -z "$TX_HASH" ]; then
-  TX_OUTPUT=$(cast send "$POOL" \
-    "repay(address,uint256,uint256,address)" \
-    "$ASSET_ADDR" \
-    "$REPAY_AMOUNT" \
-    2 \
-    "$DELEGATOR" \
-    --private-key "$AGENT_PK" \
-    --rpc-url "$RPC_URL" 2>&1) || true
-  echo "$TX_OUTPUT"
-  TX_HASH=$(echo "$TX_OUTPUT" | grep -oE '0x[a-fA-F0-9]{64}' | head -1 || echo "")
+if [ $TX_EXIT -ne 0 ]; then
+  echo -e "${RED}✗ REPAY_FAILED: $TX_OUTPUT${NC}"
+  echo "  The transaction may or may not have been broadcast. Check the"
+  echo "  delegator's debt with ./aave-status.sh $SYMBOL before retrying."
+  exit 1
+fi
+
+if ! TX_HASH=$(printf '%s' "$TX_OUTPUT" | jq -r '.transactionHash // .hash // empty' 2>/dev/null); then
+  echo -e "${RED}✗ REPAY_SENT_BUT_UNPARSEABLE: the repay was submitted successfully"
+  echo -e "  but its receipt could not be parsed. DO NOT RETRY.${NC}"
+  echo "  Raw output: $TX_OUTPUT"
+  echo "  Verify with: ./aave-status.sh $SYMBOL"
+  exit 1
+fi
+
+# Only an explicit failure status counts as a revert; cast versions that omit
+# the field leave this empty and fall through. Previously a reverted receipt
+# was reported as success, because the hash was scraped with a bare grep that
+# matched blockHash (which Foundry prints first) and a reverted receipt still
+# contains one.
+TX_STATUS=$(printf '%s' "$TX_OUTPUT" | jq -r '.status // empty' 2>/dev/null || echo "")
+if [ "$TX_STATUS" = "0x0" ] || [ "$TX_STATUS" = "0" ]; then
+  echo -e "${RED}✗ REPAY_REVERTED: transaction $TX_HASH was mined but reverted${NC}"
+  echo "  The debt was NOT repaid. Gas was still spent."
+  echo "  A max repay can revert if accrued interest exceeded the 1% approval"
+  echo "  buffer; re-running will re-quote the debt."
+  exit 1
 fi
 
 if [ -n "$TX_HASH" ]; then

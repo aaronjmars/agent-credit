@@ -11,6 +11,9 @@
 #   MOCK_ATOKEN_<SYMBOL>         — aToken (placeholder)
 #   MOCK_STABLE_DEBT_<SYMBOL>    — stable debt token (placeholder)
 #   MOCK_ALLOWANCE_RAW           — borrow allowance (raw)
+#   MOCK_ERC20_ALLOWANCE         — ERC-20 allowance (agent → pool), for repay
+#   MOCK_TOKEN_BALANCEOF         — balanceOf on a config asset (agent holdings)
+#   MOCK_DEBT_BALANCEOF          — balanceOf on a debt token (delegator debt)
 #   MOCK_TOTAL_COLLATERAL_BASE   — base-currency collateral (uint, 8-dec)
 #   MOCK_TOTAL_DEBT_BASE         — base-currency debt
 #   MOCK_AVAILABLE_BORROWS_BASE  — base-currency available borrows
@@ -113,7 +116,19 @@ case "$cmd" in
         exit 0
         ;;
       "balanceOf(address)(uint256)")
-        printf '%s\n' "${MOCK_TOKEN_BALANCEOF:-0}"
+        # Dispatch on the target contract. Asset addresses appear in config;
+        # debt-token addresses do not. Without this split the mock cannot
+        # represent "delegator owes 100 but the agent holds 50", which is the
+        # entire subject of the repay solvency check.
+        if [ -n "$(addr_to_symbol "$to")" ]; then
+          printf '%s\n' "${MOCK_TOKEN_BALANCEOF:-0}"
+        else
+          printf '%s\n' "${MOCK_DEBT_BALANCEOF:-0}"
+        fi
+        exit 0
+        ;;
+      "allowance(address,address)(uint256)")
+        printf '%s\n' "${MOCK_ERC20_ALLOWANCE:-0}"
         exit 0
         ;;
     esac
