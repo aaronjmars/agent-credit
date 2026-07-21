@@ -4,15 +4,8 @@
 # Example: aave-borrow.sh USDC 100
 set -euo pipefail
 
-SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/skills/aave-delegation}"
-CONFIG="$SKILL_DIR/config.json"
-
-# Strip cast's bracket annotations e.g. "7920000000000000 [7.92e15]" → "7920000000000000"
-strip_cast() { sed 's/ *\[.*\]//' | tr -d ' '; }
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-NC='\033[0m'
+# shellcheck source=./lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # === Parse arguments ===
 if [ $# -lt 2 ]; then
@@ -25,20 +18,8 @@ SYMBOL="$1"
 AMOUNT="$2"
 
 # === Load config ===
-RPC_URL="${AAVE_RPC_URL:-$(jq -r '.rpcUrl' "$CONFIG")}"
-AGENT_PK="${AAVE_AGENT_PRIVATE_KEY:-$(jq -r '.agentPrivateKey' "$CONFIG")}"
-DELEGATOR="${AAVE_DELEGATOR_ADDRESS:-$(jq -r '.delegatorAddress' "$CONFIG")}"
-POOL="${AAVE_POOL_ADDRESS:-$(jq -r '.poolAddress' "$CONFIG")}"
-DATA_PROVIDER=$(jq -r '.dataProviderAddress' "$CONFIG")
-CHAIN=$(jq -r '.chain // "unknown"' "$CONFIG")
-
-ASSET_ADDR=$(jq -r ".assets[\"$SYMBOL\"].address // empty" "$CONFIG")
-DECIMALS=$(jq -r ".assets[\"$SYMBOL\"].decimals // empty" "$CONFIG")
-
-if [ -z "$ASSET_ADDR" ] || [ -z "$DECIMALS" ]; then
-  echo -e "${RED}✗ Asset $SYMBOL not found in config${NC}"
-  exit 1
-fi
+load_config
+resolve_asset "$SYMBOL"
 
 AGENT_ADDR=$(cast wallet address "$AGENT_PK")
 
@@ -53,7 +34,7 @@ if ! [[ "$AMOUNT" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [ "$(echo "$AMOUNT > 0" | bc)" !=
 fi
 
 # Convert human amount to raw (e.g., 100 USDC → 100000000)
-AMOUNT_RAW=$(echo "$AMOUNT * (10^$DECIMALS)" | bc | cut -d'.' -f1)
+AMOUNT_RAW=$(to_units "$AMOUNT" "$DECIMALS")
 
 if [ -z "$AMOUNT_RAW" ] || [ "$AMOUNT_RAW" = "0" ]; then
   echo -e "${RED}✗ INVALID_AMOUNT: '$AMOUNT' rounds to zero at $DECIMALS decimals${NC}"
@@ -83,17 +64,10 @@ fi
 # than the reservation, Check 4 could pass on a balance the tx can outspend.
 BORROW_GAS_LIMIT=500000
 
-# Resolve Aave's price oracle once — Safety Check 1 (cross-asset cap) and
-# Safety Check 3 (projected health factor) both convert the borrow amount into
-# the pool's base currency.
-#
-# That base currency is USD/8-decimals on every market this skill targets;
-# some deployments (the original V2 ETH market, a few L2 variants) use ETH/18,
-# for which you override AAVE_BASE_CURRENCY_DECIMALS=18. Only the `~$X`
-# display values depend on getting this right — both sides of every safety
-# inequality are in base-currency units, so the checks hold either way.
-BASE_CURRENCY_DECIMALS="${AAVE_BASE_CURRENCY_DECIMALS:-8}"
-BASE_CURRENCY_UNIT=$(echo "10^$BASE_CURRENCY_DECIMALS" | bc)
+# Safety Check 1 (cross-asset cap) and Safety Check 3 (projected health
+# factor) both convert the borrow amount into the pool's base currency, so
+# resolve the oracle once here.
+init_base_currency
 
 ADDRESSES_PROVIDER=$(cast call "$POOL" "ADDRESSES_PROVIDER()(address)" \
   --rpc-url "$RPC_URL" | strip_cast)
@@ -116,7 +90,7 @@ if [ -z "$ASSET_PRICE" ] || [ "$ASSET_PRICE" = "0" ]; then
 fi
 
 BORROW_BASE=$(echo "$AMOUNT_RAW * $ASSET_PRICE / (10^$DECIMALS)" | bc)
-BORROW_USD=$(echo "scale=2; $BORROW_BASE / $BASE_CURRENCY_UNIT" | bc)
+BORROW_USD=$(to_usd "$BORROW_BASE")
 
 echo "=== Aave V3 Credit Delegation Borrow ==="
 echo "  Chain:      $CHAIN"
@@ -148,7 +122,7 @@ if [ -z "$CAP_PRICE" ] || [ "$CAP_PRICE" = "0" ]; then
   exit 1
 fi
 CAP_BASE=$(echo "$MAX_BORROW * $CAP_PRICE" | bc | cut -d'.' -f1)
-CAP_USD=$(echo "scale=2; $CAP_BASE / $BASE_CURRENCY_UNIT" | bc)
+CAP_USD=$(to_usd "$CAP_BASE")
 
 if (( $(echo "$BORROW_BASE > $CAP_BASE" | bc) )); then
   echo -e "${RED}✗ AMOUNT_EXCEEDS_CAP: $AMOUNT $SYMBOL (~\$$BORROW_USD) exceeds cap $MAX_BORROW $MAX_BORROW_UNIT (~\$$CAP_USD)${NC}"
@@ -160,18 +134,16 @@ echo -e "${GREEN}✓${NC} Amount within per-tx cap (~\$$BORROW_USD ≤ ~\$$CAP_U
 # === SAFETY CHECK 2: Delegation allowance ===
 echo "--- Safety Check 2: Delegation Allowance ---"
 
-TOKENS=$(cast call "$DATA_PROVIDER" \
-  "getReserveTokensAddresses(address)(address,address,address)" \
-  "$ASSET_ADDR" \
-  --rpc-url "$RPC_URL")
-VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | strip_cast)
+if ! VAR_DEBT_TOKEN=$(resolve_var_debt_token "$ASSET_ADDR"); then
+  exit 1
+fi
 
 ALLOWANCE_RAW=$(cast call "$VAR_DEBT_TOKEN" \
   "borrowAllowance(address,address)(uint256)" \
   "$DELEGATOR" "$AGENT_ADDR" \
   --rpc-url "$RPC_URL")
 ALLOWANCE_RAW=$(echo "$ALLOWANCE_RAW" | strip_cast)
-ALLOWANCE=$(echo "scale=$DECIMALS; $ALLOWANCE_RAW / (10^$DECIMALS)" | bc)
+ALLOWANCE=$(from_units "$ALLOWANCE_RAW" "$DECIMALS")
 
 if [ "$ALLOWANCE_RAW" = "0" ]; then
   echo -e "${RED}✗ INSUFFICIENT_ALLOWANCE: No delegation for $SYMBOL${NC}"
@@ -200,17 +172,16 @@ AVAILABLE_BORROWS=$(echo "$ACCOUNT_DATA" | sed -n '3p' | strip_cast)
 LIQ_THRESHOLD=$(echo "$ACCOUNT_DATA" | sed -n '4p' | strip_cast)
 HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | strip_cast)
 
-MAX_UINT="115792089237316195423570985008687907853269984665640564039457584007913129639935"
 if [ "$HEALTH_FACTOR_RAW" = "$MAX_UINT" ]; then
   HF="999"  # effectively infinite
   HF_DISPLAY="∞ (no current debt)"
 else
-  HF=$(echo "scale=4; $HEALTH_FACTOR_RAW / 1000000000000000000" | bc)
+  HF=$(hf_from_raw "$HEALTH_FACTOR_RAW")
   HF_DISPLAY="$HF"
 fi
 
-COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / $BASE_CURRENCY_UNIT" | bc)
-DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / $BASE_CURRENCY_UNIT" | bc)
+COLLATERAL_USD=$(to_usd "$TOTAL_COLLATERAL")
+DEBT_USD=$(to_usd "$TOTAL_DEBT")
 
 echo "  Current HF:     $HF_DISPLAY"
 echo "  Collateral:     \$$COLLATERAL_USD"
@@ -373,7 +344,7 @@ if [ -n "$TX_HASH" ]; then
     --rpc-url "$RPC_URL" 2>/dev/null || echo "?")
   NEW_BALANCE_RAW=$(echo "$NEW_BALANCE_RAW" | strip_cast)
   if [ "$NEW_BALANCE_RAW" != "?" ]; then
-    NEW_BALANCE=$(echo "scale=$DECIMALS; $NEW_BALANCE_RAW / (10^$DECIMALS)" | bc)
+    NEW_BALANCE=$(from_units "$NEW_BALANCE_RAW" "$DECIMALS")
     echo "  Agent $SYMBOL balance: $NEW_BALANCE"
   fi
   
@@ -384,7 +355,7 @@ if [ -n "$TX_HASH" ]; then
   if [ -n "$NEW_ACCOUNT" ]; then
     NEW_HF_RAW=$(echo "$NEW_ACCOUNT" | sed -n '6p' | strip_cast)
     if [ "$NEW_HF_RAW" != "$MAX_UINT" ]; then
-      NEW_HF=$(echo "scale=4; $NEW_HF_RAW / 1000000000000000000" | bc)
+      NEW_HF=$(hf_from_raw "$NEW_HF_RAW")
       echo "  New health factor: $NEW_HF"
     fi
   fi

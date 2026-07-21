@@ -60,12 +60,19 @@ CI (`.github/workflows/ci.yml`) runs two jobs on every push and PR:
 
 ```bash
 # 1. Lint every script (the CI gate uses --severity=warning)
-shellcheck --severity=warning aave-borrow.sh aave-repay.sh aave-setup.sh \
-  aave-status.sh tests/test-borrow-contract.sh tests/mocks/cast
+shellcheck --severity=warning lib.sh aave-borrow.sh aave-repay.sh aave-setup.sh \
+  aave-status.sh tests/test-borrow-contract.sh tests/test-repay-contract.sh \
+  tests/mocks/cast
 
-# 2. Contract tests — exercise aave-borrow.sh against a mock cast (no network, no RPC)
+# 2. Contract tests — exercised against a mock cast (no network, no RPC)
 bash tests/test-borrow-contract.sh      # needs jq + bc
+bash tests/test-repay-contract.sh
 ```
+
+`lib.sh` holds the helpers shared by the four scripts (config loading, unit
+conversion, the strip_cast filter, and the shared constants). It is sourced
+relative to the script's own directory, so the scripts must stay siblings of
+it.
 
 `tests/mocks/cast` is a stub that emits canned RPC responses per scenario, so the
 suite runs fully offline. **Add or extend a scenario there for any change to the
@@ -75,8 +82,8 @@ borrow logic** — a fix without a failing-then-passing test won't land.
 
 - Keep the diff focused and the title conventional; it becomes the squash commit.
 - Explain **what** changed and **why**; link the issue (`Fixes #123`).
-- `shellcheck --severity=warning` is clean and `tests/test-borrow-contract.sh`
-  passes locally.
+- `shellcheck --severity=warning` is clean and both contract suites pass
+  locally.
 - If you touched a safety check, describe the scenario you added and why the check
   still holds.
 

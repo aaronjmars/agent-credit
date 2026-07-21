@@ -26,6 +26,7 @@ jobs:
       - name: Run shellcheck
         run: |
           shellcheck --severity=warning \
+            lib.sh \
             aave-borrow.sh \
             aave-repay.sh \
             aave-setup.sh \

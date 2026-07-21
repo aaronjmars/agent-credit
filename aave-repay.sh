@@ -5,16 +5,8 @@
 #          aave-repay.sh USDC max
 set -euo pipefail
 
-# Strip cast's bracket annotations e.g. "7920000000000000 [7.92e15]" → "7920000000000000"
-strip_cast() { sed 's/ *\[.*\]//' | tr -d ' '; }
-
-SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/skills/aave-delegation}"
-CONFIG="$SKILL_DIR/config.json"
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# shellcheck source=./lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # === Parse arguments ===
 if [ $# -lt 2 ]; then
@@ -27,36 +19,21 @@ SYMBOL="$1"
 AMOUNT="$2"
 
 # === Load config ===
-RPC_URL="${AAVE_RPC_URL:-$(jq -r '.rpcUrl' "$CONFIG")}"
-AGENT_PK="${AAVE_AGENT_PRIVATE_KEY:-$(jq -r '.agentPrivateKey' "$CONFIG")}"
-DELEGATOR="${AAVE_DELEGATOR_ADDRESS:-$(jq -r '.delegatorAddress' "$CONFIG")}"
-POOL="${AAVE_POOL_ADDRESS:-$(jq -r '.poolAddress' "$CONFIG")}"
-DATA_PROVIDER=$(jq -r '.dataProviderAddress' "$CONFIG")
-CHAIN=$(jq -r '.chain // "unknown"' "$CONFIG")
-
-ASSET_ADDR=$(jq -r ".assets[\"$SYMBOL\"].address // empty" "$CONFIG")
-DECIMALS=$(jq -r ".assets[\"$SYMBOL\"].decimals // empty" "$CONFIG")
-
-if [ -z "$ASSET_ADDR" ] || [ -z "$DECIMALS" ]; then
-  echo -e "${RED}✗ Asset $SYMBOL not found in config${NC}"
-  exit 1
-fi
+load_config
+resolve_asset "$SYMBOL"
 
 AGENT_ADDR=$(cast wallet address "$AGENT_PK")
-MAX_UINT="115792089237316195423570985008687907853269984665640564039457584007913129639935"
 
-TOKENS=$(cast call "$DATA_PROVIDER" \
-  "getReserveTokensAddresses(address)(address,address,address)" \
-  "$ASSET_ADDR" \
-  --rpc-url "$RPC_URL")
-VAR_DEBT_TOKEN=$(echo "$TOKENS" | sed -n '3p' | strip_cast)
+if ! VAR_DEBT_TOKEN=$(resolve_var_debt_token "$ASSET_ADDR"); then
+  exit 1
+fi
 
 DEBT_RAW=$(cast call "$VAR_DEBT_TOKEN" \
   "balanceOf(address)(uint256)" \
   "$DELEGATOR" \
   --rpc-url "$RPC_URL")
 DEBT_RAW=$(echo "$DEBT_RAW" | strip_cast)
-DEBT=$(echo "scale=$DECIMALS; $DEBT_RAW / (10^$DECIMALS)" | bc)
+DEBT=$(from_units "$DEBT_RAW" "$DECIMALS")
 
 echo "=== Aave V3 Debt Repayment ==="
 echo "  Chain:      $CHAIN"
@@ -78,7 +55,7 @@ if [ "$AMOUNT" = "max" ]; then
   AMOUNT="$DEBT"
   echo "  Repaying: MAX (full debt = $DEBT $SYMBOL)"
 else
-  AMOUNT_RAW=$(echo "$AMOUNT * (10^$DECIMALS)" | bc | cut -d'.' -f1)
+  AMOUNT_RAW=$(to_units "$AMOUNT" "$DECIMALS")
   echo "  Repaying: $AMOUNT $SYMBOL ($AMOUNT_RAW raw)"
 fi
 
@@ -88,7 +65,7 @@ AGENT_BALANCE_RAW=$(cast call "$ASSET_ADDR" \
   "$AGENT_ADDR" \
   --rpc-url "$RPC_URL")
 AGENT_BALANCE_RAW=$(echo "$AGENT_BALANCE_RAW" | strip_cast)
-AGENT_BALANCE=$(echo "scale=$DECIMALS; $AGENT_BALANCE_RAW / (10^$DECIMALS)" | bc)
+AGENT_BALANCE=$(from_units "$AGENT_BALANCE_RAW" "$DECIMALS")
 
 echo "  Agent $SYMBOL balance: $AGENT_BALANCE"
 
@@ -221,7 +198,7 @@ if [ -n "$TX_HASH" ]; then
     --rpc-url "$RPC_URL" 2>/dev/null || echo "?")
   NEW_DEBT_RAW=$(echo "$NEW_DEBT_RAW" | strip_cast)
   if [ "$NEW_DEBT_RAW" != "?" ]; then
-    NEW_DEBT=$(echo "scale=$DECIMALS; $NEW_DEBT_RAW / (10^$DECIMALS)" | bc)
+    NEW_DEBT=$(from_units "$NEW_DEBT_RAW" "$DECIMALS")
     echo "  Remaining $SYMBOL debt: $NEW_DEBT"
   fi
   
@@ -234,7 +211,7 @@ if [ -n "$TX_HASH" ]; then
     if [ "$NEW_HF_RAW" = "$MAX_UINT" ]; then
       echo "  Health factor: ∞ (all debt repaid)"
     else
-      NEW_HF=$(echo "scale=4; $NEW_HF_RAW / 1000000000000000000" | bc)
+      NEW_HF=$(hf_from_raw "$NEW_HF_RAW")
       echo "  Health factor: $NEW_HF"
     fi
   fi

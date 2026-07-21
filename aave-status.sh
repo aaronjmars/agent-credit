@@ -3,11 +3,8 @@
 # Usage: aave-status.sh [SYMBOL] [--health-only] [--json]
 set -euo pipefail
 
-# Strip cast's bracket annotations e.g. "7920000000000000 [7.92e15]" → "7920000000000000"
-strip_cast() { sed 's/ *\[.*\]//' | tr -d ' '; }
-
-SKILL_DIR="${SKILL_DIR:-$HOME/.openclaw/skills/aave-delegation}"
-CONFIG="$SKILL_DIR/config.json"
+# shellcheck source=./lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # Parse args
 SYMBOL=""
@@ -27,17 +24,9 @@ for arg in "$@"; do
 done
 
 # Load config
-RPC_URL="${AAVE_RPC_URL:-$(jq -r '.rpcUrl' "$CONFIG")}"
-AGENT_PK="${AAVE_AGENT_PRIVATE_KEY:-$(jq -r '.agentPrivateKey' "$CONFIG")}"
-DELEGATOR="${AAVE_DELEGATOR_ADDRESS:-$(jq -r '.delegatorAddress' "$CONFIG")}"
-POOL="${AAVE_POOL_ADDRESS:-$(jq -r '.poolAddress' "$CONFIG")}"
-DATA_PROVIDER=$(jq -r '.dataProviderAddress' "$CONFIG")
+load_config
 AGENT_ADDR=$(cast wallet address "$AGENT_PK")
-
-# Must match aave-borrow.sh, or the USD figures diverge across scripts for the
-# same on-chain state. See the note there.
-BASE_CURRENCY_DECIMALS="${AAVE_BASE_CURRENCY_DECIMALS:-8}"
-BASE_CURRENCY_UNIT=$(echo "10^$BASE_CURRENCY_DECIMALS" | bc)
+init_base_currency
 
 # === Health Factor ===
 ACCOUNT_DATA=$(cast call "$POOL" \
@@ -50,16 +39,15 @@ TOTAL_DEBT=$(echo "$ACCOUNT_DATA" | sed -n '2p' | strip_cast)
 AVAILABLE_BORROWS=$(echo "$ACCOUNT_DATA" | sed -n '3p' | strip_cast)
 HEALTH_FACTOR_RAW=$(echo "$ACCOUNT_DATA" | sed -n '6p' | strip_cast)
 
-COLLATERAL_USD=$(echo "scale=2; $TOTAL_COLLATERAL / $BASE_CURRENCY_UNIT" | bc)
-DEBT_USD=$(echo "scale=2; $TOTAL_DEBT / $BASE_CURRENCY_UNIT" | bc)
-AVAILABLE_USD=$(echo "scale=2; $AVAILABLE_BORROWS / $BASE_CURRENCY_UNIT" | bc)
+COLLATERAL_USD=$(to_usd "$TOTAL_COLLATERAL")
+DEBT_USD=$(to_usd "$TOTAL_DEBT")
+AVAILABLE_USD=$(to_usd "$AVAILABLE_BORROWS")
 
-MAX_UINT="115792089237316195423570985008687907853269984665640564039457584007913129639935"
 if [ "$HEALTH_FACTOR_RAW" = "$MAX_UINT" ]; then
   HF="inf"
   HF_DISPLAY="∞ (no debt)"
 else
-  HF=$(echo "scale=4; $HEALTH_FACTOR_RAW / 1000000000000000000" | bc)
+  HF=$(hf_from_raw "$HEALTH_FACTOR_RAW")
   HF_DISPLAY="$HF"
 fi
 
@@ -146,7 +134,7 @@ for SYM in $ASSETS; do
     continue
   fi
   ALLOWANCE_RAW=$(echo "$ALLOWANCE_RAW" | strip_cast)
-  ALLOWANCE=$(echo "scale=$DECIMALS; $ALLOWANCE_RAW / (10^$DECIMALS)" | bc)
+  ALLOWANCE=$(from_units "$ALLOWANCE_RAW" "$DECIMALS")
 
   if ! DEBT_RAW=$(cast call "$VAR_DEBT_TOKEN" \
       "balanceOf(address)(uint256)" \
@@ -157,7 +145,7 @@ for SYM in $ASSETS; do
     continue
   fi
   DEBT_RAW=$(echo "$DEBT_RAW" | strip_cast)
-  DEBT=$(echo "scale=$DECIMALS; $DEBT_RAW / (10^$DECIMALS)" | bc)
+  DEBT=$(from_units "$DEBT_RAW" "$DECIMALS")
 
   if ! AGENT_TOKEN_RAW=$(cast call "$ASSET_ADDR" \
       "balanceOf(address)(uint256)" \
@@ -168,7 +156,7 @@ for SYM in $ASSETS; do
     continue
   fi
   AGENT_TOKEN_RAW=$(echo "$AGENT_TOKEN_RAW" | strip_cast)
-  AGENT_TOKEN=$(echo "scale=$DECIMALS; $AGENT_TOKEN_RAW / (10^$DECIMALS)" | bc)
+  AGENT_TOKEN=$(from_units "$AGENT_TOKEN_RAW" "$DECIMALS")
 
   if [ "$JSON_OUTPUT" = true ]; then
     JSON_ASSETS=$(echo "$JSON_ASSETS" | jq --arg sym "$SYM" --arg allow "$ALLOWANCE" \
