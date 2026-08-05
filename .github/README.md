@@ -1,6 +1,27 @@
-# Agent Credit — Credit Delegation for AI Agents
+<p align="center">
+  <img src="../docs/assets/hero-animated.svg" alt="Agent Credit — credit delegation for AI agents. Give your agent a credit line: it borrows from Aave when it needs funds, you stay in control on any EVM chain and can revoke anytime." width="100%" />
+</p>
 
-Give your AI agent a credit line. It borrows from Aave when it needs funds, and the debt accrues on your position. You stay in control — you choose which assets it can borrow, how much, and you can revoke anytime.
+<p align="center">
+  <strong>Star us&nbsp;❤️&nbsp;→</strong>&nbsp;&nbsp;
+  <a href="https://github.com/aaronjmars/agent-credit/stargazers"><img src="../docs/assets/btn-star.svg" alt="Star Agent Credit on GitHub" height="34" align="absmiddle"></a>&nbsp;&nbsp;
+  <a href="../SKILL.md"><img src="../docs/assets/btn-docs.svg" alt="Agent Credit skill docs" height="34" align="absmiddle"></a>&nbsp;&nbsp;
+  <a href="https://x.com/aaronjmars"><img src="../docs/assets/btn-x.svg" alt="@aaronjmars on X" height="34" align="absmiddle"></a>
+</p>
+
+<p align="center">
+  <strong>Give your AI agent a credit line.</strong><br>
+  It borrows from Aave when it needs funds and the debt accrues on your position - you choose which assets it can borrow, how much, and you can revoke anytime.
+</p>
+
+<div align="center">
+
+[![stars](https://img.shields.io/github/stars/aaronjmars/agent-credit?style=flat-square&label=stars&color=F4EFE1&labelColor=0d0c0a&logo=github&logoColor=F4EFE1)](https://github.com/aaronjmars/agent-credit/stargazers)
+[![forks](https://img.shields.io/github/forks/aaronjmars/agent-credit?style=flat-square&label=forks&color=F4EFE1&labelColor=0d0c0a&logo=github&logoColor=F4EFE1)](https://github.com/aaronjmars/agent-credit/network/members)
+[![Aave](https://img.shields.io/badge/Aave-V3%20%2F%20V2-F4EFE1?style=flat-square&labelColor=0d0c0a)](https://aave.com)
+[![license](https://img.shields.io/badge/license-MIT-F4EFE1?style=flat-square&labelColor=0d0c0a)](../LICENSE)
+
+</div>
 
 Borrowing requires **Aave V3**; status, repay, and setup also work against **Aave V2** (see [SKILL.md](../SKILL.md) for why). Preconfigured for Base, Ethereum, Polygon, and Arbitrum — but works on any EVM chain where Aave V3 is deployed.
 
