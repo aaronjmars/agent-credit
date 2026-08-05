@@ -25,8 +25,6 @@
 
 Borrowing requires **Aave V3**; status, repay, and setup also work against **Aave V2** (see [SKILL.md](../SKILL.md) for why). Preconfigured for Base, Ethereum, Polygon, and Arbitrum — but works on any EVM chain where Aave V3 is deployed.
 
-![Agent Credit — Aave Credit Delegation](../img/credit.png)
-
 ## Compatible With
 
 - **[OpenClaw](https://openclaw.ai/)** — Install as a skill and the agent can borrow autonomously
