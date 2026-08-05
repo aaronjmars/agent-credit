@@ -14,6 +14,11 @@
   It borrows from Aave when it needs funds and the debt accrues on your position - you choose which assets it can borrow, how much, and you can revoke anytime.
 </p>
 
+<p align="center">
+  Borrowing requires <strong>Aave V3</strong>; status, repay, and setup also work against <strong>Aave V2</strong> (see <a href="../SKILL.md">SKILL.md</a> for why).<br>
+  Preconfigured for Base, Ethereum, Polygon, and Arbitrum — but works on any EVM chain where Aave V3 is deployed.
+</p>
+
 <div align="center">
 
 [![stars](https://img.shields.io/github/stars/aaronjmars/agent-credit?style=flat-square&label=stars&color=F4EFE1&labelColor=0d0c0a&logo=github&logoColor=F4EFE1)](https://github.com/aaronjmars/agent-credit/stargazers)
@@ -22,8 +27,6 @@
 [![license](https://img.shields.io/badge/license-MIT-F4EFE1?style=flat-square&labelColor=0d0c0a)](../LICENSE)
 
 </div>
-
-Borrowing requires **Aave V3**; status, repay, and setup also work against **Aave V2** (see [SKILL.md](../SKILL.md) for why). Preconfigured for Base, Ethereum, Polygon, and Arbitrum — but works on any EVM chain where Aave V3 is deployed.
 
 ## Compatible With
 
