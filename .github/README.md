@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../docs/assets/hero-animated.svg" alt="Agent Credit — credit delegation for AI agents. Give your agent a credit line: it borrows from Aave when it needs funds, you stay in control on any EVM chain and can revoke anytime." width="100%" />
+  <img src="../docs/assets/hero-animated.svg" alt="Agent Credit - credit delegation for AI agents. Give your agent a credit line: it borrows from Aave when it needs funds, you stay in control on any EVM chain and can revoke anytime." width="100%" />
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
 
 <p align="center">
   Borrowing requires <strong>Aave V3</strong>; status, repay, and setup also work against <strong>Aave V2</strong> (see <a href="../SKILL.md">SKILL.md</a> for why).<br>
-  Preconfigured for Base, Ethereum, Polygon, and Arbitrum — but works on any EVM chain where Aave V3 is deployed.
+  Preconfigured for Base, Ethereum, Polygon, and Arbitrum - but works on any EVM chain where Aave V3 is deployed.
 </p>
 
 <div align="center">
@@ -30,25 +30,25 @@
 
 ## Compatible With
 
-- **[OpenClaw](https://openclaw.ai/)** — Install as a skill and the agent can borrow autonomously
-- **[Claude Code](https://www.npmjs.com/package/@anthropic-ai/claude-code)** — Run the scripts directly from a Claude Code session
-- **Any agent framework** — The scripts are plain bash + Foundry's `cast`, so they work anywhere with a shell
+- **[OpenClaw](https://openclaw.ai/)** - Install as a skill and the agent can borrow autonomously
+- **[Claude Code](https://www.npmjs.com/package/@anthropic-ai/claude-code)** - Run the scripts directly from a Claude Code session
+- **Any agent framework** - The scripts are plain bash + Foundry's `cast`, so they work anywhere with a shell
 
-Combines naturally with **[Bankr](https://bankr.bot/)** skills — borrow USDC via delegation, then use Bankr to swap, bridge, or deploy it. The agent gets a credit line *and* a full DeFi toolkit.
+Combines naturally with **[Bankr](https://bankr.bot/)** skills - borrow USDC via delegation, then use Bankr to swap, bridge, or deploy it. The agent gets a credit line *and* a full DeFi toolkit.
 
 ## What This Enables
 
-- **Self-funding agents** — The agent borrows stablecoins or tokens to pay for operations without you manually transferring funds each time
-- **On-demand liquidity** — Capital is drawn exactly when needed rather than sitting idle in the agent's wallet
-- **Borrow + swap combos** — Borrow USDC via delegation, swap to any token via Bankr; the basis for autonomous DCA
+- **Self-funding agents** - The agent borrows stablecoins or tokens to pay for operations without you manually transferring funds each time
+- **On-demand liquidity** - Capital is drawn exactly when needed rather than sitting idle in the agent's wallet
+- **Borrow + swap combos** - Borrow USDC via delegation, swap to any token via Bankr; the basis for autonomous DCA
 
-The agent only needs a wallet with a tiny amount of ETH for gas. All real capital comes from your Aave position via delegation. Note the agent cannot borrow its way out of an empty gas tank — see [Step 4](#step-4-fund-the-agent-wallet-for-gas).
+The agent only needs a wallet with a tiny amount of ETH for gas. All real capital comes from your Aave position via delegation. Note the agent cannot borrow its way out of an empty gas tank - see [Step 4](#step-4-fund-the-agent-wallet-for-gas).
 
 ## How Credit Delegation Works
 
 Credit delegation separates two things: **borrowing power** and **delegation approval**.
 
-**Borrowing power is holistic.** It comes from your entire collateral position across all assets. If you deposit $10k worth of ETH at 80% LTV, you have $8k of borrowing capacity. That capacity isn't locked to any specific asset — it's a pool-wide number.
+**Borrowing power is holistic.** It comes from your entire collateral position across all assets. If you deposit $10k worth of ETH at 80% LTV, you have $8k of borrowing capacity. That capacity isn't locked to any specific asset - it's a pool-wide number.
 
 **Delegation approval is isolated per debt token.** You control *which* assets the agent can borrow and *how much* of each by calling `approveDelegation()` on individual VariableDebtTokens. Each asset has its own debt token contract, and each approval is independent.
 
@@ -62,7 +62,7 @@ Your Collateral (holistic)              Delegation Approvals (isolated)
 └─────────────────────────┘
 ```
 
-So if you deposit ETH as collateral, you can approve the agent to borrow up to 500 USDC and 0.1 WETH — but not cbETH. The agent can only borrow what you've explicitly approved, but the *capacity* to borrow comes from your total collateral.
+So if you deposit ETH as collateral, you can approve the agent to borrow up to 500 USDC and 0.1 WETH - but not cbETH. The agent can only borrow what you've explicitly approved, but the *capacity* to borrow comes from your total collateral.
 
 ## Scripts
 
@@ -76,12 +76,37 @@ These scripts are for the **agent** to use. The delegator never runs them.
 | `aave-status.sh [SYMBOL] [--health-only] [--json]` | Check allowances, health factor, and debt |
 
 Every borrow runs these checks before executing:
-1. **Per-tx cap** — amount within configured limit
-2. **Delegation allowance** — sufficient allowance on the debt token
-3. **Health factor** — delegator's position stays healthy after borrow
-4. **Gas balance** — agent wallet has enough ETH for the transaction
+1. **Per-tx cap** - amount within configured limit
+2. **Delegation allowance** - sufficient allowance on the debt token
+3. **Health factor** - delegator's position stays healthy after borrow
+4. **Gas balance** - agent wallet has enough ETH for the transaction
 
 If any check fails, the borrow is aborted with a clear error.
+
+## Agent Setup
+
+The scripts need Foundry's `cast`, plus `jq` and `bc`:
+
+```bash
+curl -L https://foundry.paradigm.xyz | bash && foundryup
+```
+
+Config lives at `~/.openclaw/skills/aave-delegation/config.json` by default. Set `SKILL_DIR` to use another folder, or `CONFIG` to point at the file directly. Start from the example and fill in the agent key and your address:
+
+```bash
+mkdir -p ~/.openclaw/skills/aave-delegation
+cp config.example.json ~/.openclaw/skills/aave-delegation/config.json
+./aave-setup.sh
+```
+
+These env vars override the config when set: `AAVE_RPC_URL`, `AAVE_AGENT_PRIVATE_KEY`, `AAVE_DELEGATOR_ADDRESS`, `AAVE_POOL_ADDRESS`, `AAVE_MIN_HEALTH_FACTOR`, and `AAVE_BASE_CURRENCY_DECIMALS` (set to `18` on ETH-denominated V2 markets). Full agent instructions are in [SKILL.md](../SKILL.md).
+
+Tests run offline against a mock `cast`, no RPC needed:
+
+```bash
+bash tests/test-borrow-contract.sh
+bash tests/test-repay-contract.sh
+```
 
 ## Safety
 
@@ -93,7 +118,7 @@ You control exposure through:
 - **Delegation ceilings** per asset (set via `approveDelegation`)
 - **Per-transaction caps** in the config (`safety.maxBorrowPerTx`)
 - **Health factor floor** (`safety.minHealthFactor`, default 1.5)
-- **Instant revocation** — set delegation to 0 at any time
+- **Instant revocation** - set delegation to 0 at any time
 
 See [safety.md](../safety.md) for the full threat model and emergency procedures.
 
@@ -101,17 +126,17 @@ See [safety.md](../safety.md) for the full threat model and emergency procedures
 
 # Delegator Setup Guide
 
-Everything below is done from **your own wallet** — through the Aave web UI, a block explorer, or your preferred wallet app. You never need to clone this repo, run these scripts, or enter your private key anywhere here.
+Everything below is done from **your own wallet** - through the Aave web UI, a block explorer, or your preferred wallet app. You never need to clone this repo, run these scripts, or enter your private key anywhere here.
 
 ## Step 1: Supply Collateral
 
-Go to [app.aave.com](https://app.aave.com), connect your wallet, and supply collateral (ETH, USDC, etc.). This is standard Aave usage — nothing specific to credit delegation yet.
+Go to [app.aave.com](https://app.aave.com), connect your wallet, and supply collateral (ETH, USDC, etc.). This is standard Aave usage - nothing specific to credit delegation yet.
 
 If you already have a position on Aave, skip to Step 2.
 
 ## Step 2: Find the Debt Token
 
-Each asset on Aave has a **VariableDebtToken** — that's the contract you approve delegation on. You need its address for every asset you want the agent to borrow.
+Each asset on Aave has a **VariableDebtToken** - that's the contract you approve delegation on. You need its address for every asset you want the agent to borrow.
 
 ### From the Aave UI
 
@@ -119,7 +144,7 @@ On [app.aave.com](https://app.aave.com), go to the reserve page for the asset. C
 
 ![Finding the debt token address on the Aave UI](../img/token-find.png)
 
-Click the debt token address to open it on the block explorer — you'll need it for Step 3.
+Click the debt token address to open it on the block explorer - you'll need it for Step 3.
 
 ### From deployments.md
 
@@ -146,8 +171,8 @@ This is the key step. You call `approveDelegation()` on the VariableDebtToken to
 ### Approve multiple assets
 
 Each asset has its own debt token. Repeat the process above for each asset you want the agent to borrow. For example:
-- USDC VariableDebtToken → `approveDelegation(agent, 500000000)` — up to 500 USDC
-- WETH VariableDebtToken → `approveDelegation(agent, 100000000000000000)` — up to 0.1 WETH
+- USDC VariableDebtToken → `approveDelegation(agent, 500000000)` - up to 500 USDC
+- WETH VariableDebtToken → `approveDelegation(agent, 100000000000000000)` - up to 0.1 WETH
 
 The agent cannot borrow any asset you haven't approved.
 
@@ -167,7 +192,7 @@ Run the setup check to confirm everything is connected:
 ./aave-setup.sh
 ```
 
-This shows delegation allowances per asset, your health factor, and whether the agent has gas. It only reads on-chain data — but it does need `agentPrivateKey` in config, because it derives the agent's address from it to check that address's allowances and balance.
+This shows delegation allowances per asset, your health factor, and whether the agent has gas. It only reads on-chain data - but it does need `agentPrivateKey` in config, because it derives the agent's address from it to check that address's allowances and balance.
 
 ---
 
@@ -187,11 +212,11 @@ Call `approveDelegation(..., 0)` on every VariableDebtToken you previously appro
 
 ### Check outstanding debt
 
-On [app.aave.com](https://app.aave.com), your dashboard shows all outstanding borrows. Any debt the agent created shows up here — it's on your position.
+On [app.aave.com](https://app.aave.com), your dashboard shows all outstanding borrows. Any debt the agent created shows up here - it's on your position.
 
 ### Repay debt yourself
 
-On [app.aave.com](https://app.aave.com), click **Repay** on any borrow. Standard Aave repayment — the agent doesn't need to be involved. The agent can also repay via `aave-repay.sh`.
+On [app.aave.com](https://app.aave.com), click **Repay** on any borrow. Standard Aave repayment - the agent doesn't need to be involved. The agent can also repay via `aave-repay.sh`.
 
 ---
 
@@ -229,6 +254,10 @@ See [safety.md](../safety.md) for the full threat model and emergency procedures
 | [deployments.md](../deployments.md) | All Aave V2/V3 contract + debt token addresses |
 | [contracts.md](../contracts.md) | Core contract addresses and delegator setup commands |
 | [safety.md](../safety.md) | Threat model, risk mitigations, emergency procedures |
+
+## License
+
+MIT, see [LICENSE](../LICENSE).
 
 ---
 
