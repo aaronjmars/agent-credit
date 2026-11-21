@@ -5,20 +5,22 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-
+      # shellcheck ships on the ubuntu-24.04 runner image: no install step.
       # Lint every bash script in the repo. tests/mocks/cast has a bash shebang
       # but no .sh suffix, so it is listed explicitly. --severity=warning gates
       # on real bugs (undefined vars, dead assignments, quoting hazards) without
@@ -38,16 +40,16 @@ jobs:
   test:
     name: Contract tests
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The borrow scripts and the mock cast use jq + bc. jq ships on the
-      # runner image; install bc explicitly so the suite never depends on it
-      # being preinstalled.
+      # runner image; bc is installed only when the image lacks it.
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y bc jq
+        run: command -v bc >/dev/null || (sudo apt-get update && sudo apt-get install -y bc)
 
-      # Both suites run against tests/mocks/cast — no network, no real RPC.
+      # Both suites run against tests/mocks/cast - no network, no real RPC.
       # Borrow covers the cross-asset cap, the projected health factor, the
       # gas-price-zero floor, oracle-price-zero, config and amount validation,
       # and the exact borrow argv. Repay covers non-idempotent retry, reverted
